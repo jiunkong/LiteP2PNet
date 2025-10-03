@@ -1,0 +1,15 @@
+{
+    "name": "dev.jiunkong.litep2pnet",
+    "version": "0.0.1",
+    "description": "A lightweight P2P networking library for Unity",
+    "displayName": "LiteP2PNet",
+    "unity": "6000.0",
+    "author": {
+        "name": "Jiun Kong",
+        "email": "bukgeuk1234@gmail.com"
+    },
+    "dependencies": {
+        "com.unity.webrtc": "3.0.0",
+        "com.endel.nativewebsocket": "https://github.com/endel/NativeWebSocket.git#upm"
+    }
+}
