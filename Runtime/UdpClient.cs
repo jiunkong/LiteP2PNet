@@ -115,7 +115,7 @@ namespace LiteP2PNet {
             };
         }
 
-        public void ConnectServer(string lobbyId) {
+        public IEnumerator ConnectServerAsync(string lobbyId, float timeout = 10f) {
             _signaling = new WebSocket(_serverUrl, new Dictionary<string, string> {
                 { "user-id", _userId },
                 { "lobby-id", lobbyId }
@@ -135,6 +135,17 @@ namespace LiteP2PNet {
             SetupSignaling();
 
             _signaling.Connect();
+
+            float elapsed = 0f;
+            
+            while (!isConnectedToServer && elapsed < timeout) {
+                yield return null;
+                elapsed += Time.deltaTime;
+            }
+            
+            if (!isConnectedToServer) {
+                Debug.LogError("Failed to connect to signaling server");
+            }
         }
 
         public void DisconnectServer() {
@@ -142,7 +153,7 @@ namespace LiteP2PNet {
             _signaling = null;
         }
 
-        public IEnumerator ConnectPeer(string peerId) {
+        public IEnumerator ConnectPeerAsync(string peerId) {
             SetupPeerConnection(peerId);
 
             var connection = _peerConnectionMap[peerId];
@@ -449,6 +460,10 @@ namespace LiteP2PNet {
 
         void Update() {
             _netManager?.PollEvents();
+
+            #if !UNITY_WEBGL || UNITY_EDITOR
+            _signaling?.DispatchMessageQueue();
+            #endif
 
             foreach (var key in _incomingMessageMap.Keys) {
                 while (_incomingMessageMap[key].TryDequeue(out var message)) {
