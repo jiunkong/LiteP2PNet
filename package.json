@@ -10,6 +10,6 @@
     },
     "dependencies": {
         "com.unity.webrtc": "3.0.0",
-        "com.endel.nativewebsocket": "https://github.com/endel/NativeWebSocket.git#upm"
+        "com.endel.nativewebsocket": "1.1.5"
     }
 }
