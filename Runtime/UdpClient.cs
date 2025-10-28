@@ -7,21 +7,38 @@ using System.Net;
 using System.Net.Sockets;
 using System;
 using System.Collections.Concurrent;
-using System.Linq;
 using System.Collections;
-using System.Data;
-using UnityEngine.Analytics;
-using Unity.VisualScripting;
+using System.Text.RegularExpressions;
 
 namespace LiteP2PNet {
     public class UdpClient : MonoBehaviour, INetEventListener {
+        private static UdpClient _instance;
+        public static UdpClient Instance {
+            get {
+                if (_instance != null) return _instance;
+
+                _instance = FindAnyObjectByType<UdpClient>();
+                if (_instance != null) return _instance;
+
+                var obj = new GameObject("UdpClient (Singleton)");
+                _instance = obj.AddComponent<UdpClient>();
+                DontDestroyOnLoad(obj);
+                return _instance;
+            }
+        }
+
+        private readonly Regex _udpInfoPattern = new(@"(\d{1,3}(?:\.\d{1,3}){3}) (\d+)");
+
         private WebSocket _signaling;
-        private Dictionary<string, RTCPeerConnection> _peerConnectionMap;
+        private Dictionary<string, RTCPeerConnection> _peerConnectionMap = new();
         private NetManager _netManager;
-        private Dictionary<string, List<RTCIceCandidate>> _myIceCandidatesMap;
-        private Dictionary<string, List<RTCIceCandidate>> _remoteIceCandidatesMap;
-        private Dictionary<string, ConcurrentQueue<SignalingMessage>> _incomingMessageMap;
-        private Dictionary<string, UdpInfo> _udpInfoMap;
+        private Dictionary<string, List<RTCIceCandidate>> _myIceCandidatesMap = new();
+        private Dictionary<string, List<RTCIceCandidate>> _remoteIceCandidatesMap = new();
+        private Dictionary<string, ConcurrentQueue<SignalingMessage>> _incomingMessageMap = new();
+        private PairMap<string, UdpInfo> _udpInfoBiMap = new();
+
+        private Dictionary<string, string> _connectionKeyMap = new();
+        private PairMap<string, NetPeer> _peerBiMap = new();
 
         private string _userId;
         private string _serverUrl;
@@ -32,8 +49,25 @@ namespace LiteP2PNet {
 
         private bool _debugLog = false;
 
-        private Dictionary<string, bool> _isConnectionEstablishedMap;
-        private Dictionary<string, bool> _isDescriptionReadyMap;
+        private Dictionary<string, bool> _isConnectionEstablishedMap = new();
+        private Dictionary<string, bool> _isDescriptionReadyMap = new();
+
+        private Dictionary<string, int> _latencyMap = new();
+
+        void Awake() {
+            if (_instance != null && _instance != this)
+            {
+                Destroy(gameObject);
+                return;
+            }
+
+            _instance = this;
+            DontDestroyOnLoad(gameObject);
+        }
+
+        public bool TryGetLatency(string peerId, out int latency) {
+            return _latencyMap.TryGetValue(peerId, out latency);
+        }
 
         public void Init(string serverUrl, string userId, string[] stunServers = null, string[] turnServers = null, bool debugLog = false) {
             _userId = userId;
@@ -52,8 +86,6 @@ namespace LiteP2PNet {
                     _iceServers.Add(new RTCIceServer { urls = new[] { turn } });
                 }
             }
-
-            SetupSignaling();
 
             _netManager = new NetManager(this);
             _netManager.Start();
@@ -95,7 +127,12 @@ namespace LiteP2PNet {
             _myIceCandidatesMap = new();
             _remoteIceCandidatesMap = new();
             _incomingMessageMap = new();
-            _udpInfoMap = new();
+            _udpInfoBiMap = new();
+            _peerBiMap = new();
+            _connectionKeyMap = new();
+            _latencyMap = new();
+
+            SetupSignaling();
 
             _signaling.Connect();
         }
@@ -156,7 +193,23 @@ namespace LiteP2PNet {
                         if (!_isConnectionEstablishedMap.ContainsKey(peerId) || !_isConnectionEstablishedMap[peerId]) {
                             _isConnectionEstablishedMap.Add(peerId, true);
                             if (_debugLog) Debug.Log($"WebSocket connection established with {peerId}");
-                            StartUdpHolePunching(peerId);
+
+                            foreach (var candidate in _myIceCandidatesMap[peerId]) {
+                                if (candidate.Candidate.Contains("udp")) {
+                                    var match = _udpInfoPattern.Match(candidate.Candidate);
+                                    if (match.Success) {
+                                        string ip = match.Groups[1].Value;
+                                        int port = int.Parse(match.Groups[2].Value);
+
+                                        SendSignalingMessage("udp-info", peerId, new UdpInfo {
+                                            ip = ip,
+                                            port = port
+                                        });
+
+                                        break;
+                                    }
+                                }
+                            }
                         }
                         break;
                 }
@@ -180,7 +233,7 @@ namespace LiteP2PNet {
                     HandleUdpInfo(message);
                     break;
                 case "connect":
-                    StartUdpHolePunching("");
+                    yield return BeginConnection(message);
                     break;
                 case "user-change":
                     break;
@@ -194,7 +247,7 @@ namespace LiteP2PNet {
         {
             SetupPeerConnection(message.from);
 
-            var offerData = JsonUtility.FromJson<OfferAnswerData>(message.data);
+            var offerData = JsonUtility.FromJson<OfferAnswerData>(message.body);
             var offer = new RTCSessionDescription
             {
                 type = RTCSdpType.Offer,
@@ -235,7 +288,7 @@ namespace LiteP2PNet {
 
         private IEnumerator HandleAnswer(SignalingMessage message)
         {
-            var answerData = JsonUtility.FromJson<OfferAnswerData>(message.data);
+            var answerData = JsonUtility.FromJson<OfferAnswerData>(message.body);
             var answer = new RTCSessionDescription
             {
                 type = RTCSdpType.Answer,
@@ -251,7 +304,7 @@ namespace LiteP2PNet {
 
         private void HandleIceCandidate(SignalingMessage message)
         {
-            var candidateData = JsonUtility.FromJson<IceCandidateData>(message.data);
+            var candidateData = JsonUtility.FromJson<IceCandidateData>(message.body);
             var candidate = new RTCIceCandidate(new RTCIceCandidateInit
             {
                 candidate = candidateData.candidate,
@@ -279,42 +332,101 @@ namespace LiteP2PNet {
         }
 
         private void HandleUdpInfo(SignalingMessage message) {
-            var udpInfo = JsonUtility.FromJson<UdpInfo>(message.data);
-            _udpInfoMap[message.from] = udpInfo;
+            var udpInfo = JsonUtility.FromJson<UdpInfo>(message.body);
+            _udpInfoBiMap[message.from] = udpInfo;
 
             if (_debugLog) Debug.Log($"Received UDP info from {message.from}: {udpInfo.ip}:{udpInfo.port}");
         }
 
-        private void StartUdpHolePunching(string peerId) {
+        private IEnumerator BeginConnection(SignalingMessage message, int bursts = 5, int burstInterval = 150, int maxBurstRounds = 4) {
+            var request = JsonUtility.FromJson<ConnectionRequest>(message.body);
 
+            _connectionKeyMap[request.target] = request.key;
+
+            // start udp hole punching
+            if (_udpInfoBiMap.TryGetByFirst(request.target, out var udpInfo)) {
+                var remoteEndPoint = new IPEndPoint(IPAddress.Parse(udpInfo.ip), udpInfo.port);
+
+                byte[] msg = System.Text.Encoding.UTF8.GetBytes($"hole-punching:{_userId}:{request.key}");
+                int maxTotalJitter = burstInterval / 10 * bursts;
+                for (int round = 0; round < maxBurstRounds; round++) {
+                    int totalJitter = 0;
+                    for (int i = 0; i < bursts; i++) {
+                        _netManager.SendUnconnectedMessage(msg, remoteEndPoint);
+                        if (_debugLog) Debug.Log($"Sent UDP hole punching message to {request.target} at {udpInfo.ip}:{udpInfo.port}");
+
+                        int jitter = UnityEngine.Random.Range(-burstInterval / 10, burstInterval / 10);
+                        totalJitter += jitter;
+                        yield return new WaitForSeconds((burstInterval + jitter) / 1000f);
+                    }
+
+                    // connection check
+                    if (_peerBiMap.ContainsFirst(request.target) && _peerBiMap[request.target].ConnectionState == ConnectionState.Connected) {
+                        yield break;
+                    }
+
+                    if (_debugLog) Debug.Log("Failed to establish UDP connection, retrying...");
+                    yield return new WaitForSeconds((maxTotalJitter - totalJitter) / 1000f);
+                }
+            }
         }
 
         public void OnPeerConnected(NetPeer peer) {
-            throw new System.NotImplementedException();
+            if (_debugLog) Debug.Log("Connected to peer: " + peer.Address + ":" + peer.Port);
+
+
+        }
+        
+        private void CleanUpPeer(string peerId) {
+            if (_peerConnectionMap.TryGetValue(peerId, out var connection)) {
+                connection.Close();
+                connection.Dispose();
+                _peerConnectionMap.Remove(peerId);
+            }
+
+            _myIceCandidatesMap.Remove(peerId);
+            _remoteIceCandidatesMap.Remove(peerId);
+            _isConnectionEstablishedMap.Remove(peerId);
+            _isDescriptionReadyMap.Remove(peerId);
+            _latencyMap.Remove(peerId);
+            _udpInfoBiMap.RemoveByFirst(peerId);
+            _connectionKeyMap.Remove(peerId);
+            _peerBiMap.RemoveByFirst(peerId);
         }
 
         public void OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo) {
-            throw new System.NotImplementedException();
+            if (_debugLog) Debug.Log("Disconnected from peer: " + peer.Address + ":" + peer.Port);
+
+            string peerId = _peerBiMap[peer];
+            CleanUpPeer(peerId);
         }
 
         public void OnNetworkError(IPEndPoint endPoint, SocketError socketError) {
-            throw new System.NotImplementedException();
+            Debug.LogError($"Network error at {endPoint}: {socketError}");
         }
 
         public void OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channelNumber, DeliveryMethod deliveryMethod) {
-            throw new System.NotImplementedException();
+            string data = System.Text.Encoding.UTF8.GetString(reader.GetRemainingBytes());
+            if (_debugLog) Debug.Log($"Received UDP message from {peer.Address}:{peer.Port}: {data}");
+
+            reader.Recycle();
         }
 
         public void OnNetworkReceiveUnconnected(IPEndPoint remoteEndPoint, NetPacketReader reader, UnconnectedMessageType messageType) {
-            throw new System.NotImplementedException();
+            string message = System.Text.Encoding.UTF8.GetString(reader.GetRemainingBytes());
+            var parts = message.Split(':');
+            if (_debugLog) Debug.Log($"Received Unconnected UDP message from {remoteEndPoint}: {message}");
+
+            // Handle hole punching message
+            if (parts[0] == "hole-punching" && _connectionKeyMap.TryGetValue(parts[1], out var key) && parts[2] == key) {
+                _netManager.Connect(remoteEndPoint, key);
+            }
         }
 
         public void OnNetworkLatencyUpdate(NetPeer peer, int latency) {
-            throw new System.NotImplementedException();
-        }
-
-        public void OnConnectionRequest(ConnectionRequest request) {
-            throw new System.NotImplementedException();
+            if (_peerBiMap.TryGetBySecond(peer, out var peerId)) {
+                _latencyMap[peerId] = latency;
+            }
         }
 
         private void SendSignalingMessage(string type, string to, object data) {
@@ -325,7 +437,7 @@ namespace LiteP2PNet {
                     type = type,
                     from = _userId,
                     to = to,
-                    data = json
+                    body = json
                 };
 
                 _signaling.SendText(JsonUtility.ToJson(message));
@@ -343,6 +455,40 @@ namespace LiteP2PNet {
                     StartCoroutine(HandleSignalingMessage(message));
                 }
             }
+        }
+
+        public void OnConnectionRequest(LiteNetLib.ConnectionRequest request) {
+            if (_debugLog) Debug.Log("Received connection request from " + request.RemoteEndPoint);
+
+            var udpInfo = new UdpInfo {
+                ip = request.RemoteEndPoint.Address.ToString(),
+                port = request.RemoteEndPoint.Port
+            };
+
+            if (_udpInfoBiMap.TryGetBySecond(udpInfo, out var peerId)) {
+                request.AcceptIfKey(_connectionKeyMap[peerId]);
+            }
+            else {
+                request.Reject();
+                if (_debugLog) Debug.Log("Rejected connection request from " + request.RemoteEndPoint);
+            }
+        }
+
+        private void CleanUp() {
+            if (_signaling != null) DisconnectServer();
+
+            if (_netManager == null) return;
+            _netManager.DisconnectAll();
+            _netManager.Stop();
+            _netManager = null;
+        }
+
+        void OnApplicationQuit() {
+            CleanUp();
+        }
+
+        void OnDestroy() {
+            CleanUp();
         }
     }
 }

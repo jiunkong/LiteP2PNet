@@ -6,7 +6,7 @@ namespace LiteP2PNet {
         public string type;
         public string from;
         public string to;
-        public string data;
+        public string body;
     }
 
     [Serializable]
@@ -23,6 +23,12 @@ namespace LiteP2PNet {
     }
 
     [Serializable]
+    public class ConnectionRequest {
+        public string target;
+        public string key;
+    }
+
+    [Serializable]
     public class UdpInfo {
         public string ip;
         public int port;
@@ -36,7 +42,7 @@ namespace LiteP2PNet {
         public NullableInt(int? v) {
             if (v == null) {
                 hasValue = false;
-                v = 0;
+                value = 0;
             }
             else {
                 value = v.Value;
