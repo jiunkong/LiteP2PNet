@@ -9,6 +9,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections;
 using System.Text.RegularExpressions;
+using System.Linq;
 
 namespace LiteP2PNet {
     public class UdpClient : MonoBehaviour, INetEventListener {
@@ -34,7 +35,7 @@ namespace LiteP2PNet {
         private NetManager _netManager;
         private Dictionary<string, List<RTCIceCandidate>> _myIceCandidatesMap = new();
         private Dictionary<string, List<RTCIceCandidate>> _remoteIceCandidatesMap = new();
-        private Dictionary<string, ConcurrentQueue<SignalingMessage>> _incomingMessageMap = new();
+        private ConcurrentQueue<SignalingMessage> _incomingMessageQueue = new();
         private PairMap<string, UdpInfo> _udpInfoBiMap = new();
 
         private Dictionary<string, string> _connectionKeyMap = new();
@@ -107,11 +108,9 @@ namespace LiteP2PNet {
             };
 
             _signaling.OnMessage += (bytes) => {
-                if (!_incomingMessageMap.ContainsKey(_userId)) _incomingMessageMap.Add(_userId, new());
-
                 var message = System.Text.Encoding.UTF8.GetString(bytes);
                 var signalingMessage = JsonUtility.FromJson<SignalingMessage>(message);
-                _incomingMessageMap[_userId].Enqueue(signalingMessage);
+                _incomingMessageQueue.Enqueue(signalingMessage);
             };
         }
 
@@ -126,7 +125,7 @@ namespace LiteP2PNet {
             _peerConnectionMap = new();
             _myIceCandidatesMap = new();
             _remoteIceCandidatesMap = new();
-            _incomingMessageMap = new();
+            _incomingMessageQueue = new();
             _udpInfoBiMap = new();
             _peerBiMap = new();
             _connectionKeyMap = new();
@@ -323,22 +322,18 @@ namespace LiteP2PNet {
                 sdpMLineIndex = candidateData.sdpMLineIndex.ToNullable()
             });
 
-            if (_isDescriptionReadyMap.ContainsKey(message.from) && _isDescriptionReadyMap[message.from])
-            {
-                if (_remoteIceCandidatesMap.ContainsKey(message.from))
-                {
-                    _remoteIceCandidatesMap[message.from].Add(candidate);
-                }
-                else
-                {
-                    _remoteIceCandidatesMap.Add(message.from, new() { candidate });
-                }
-                Debug.Log($"Queued Remote ICE Candidate: {candidate.Candidate}");
-            }
-            else
-            {
+            if (_isDescriptionReadyMap.ContainsKey(message.from) && _isDescriptionReadyMap[message.from]) {
                 _peerConnectionMap[message.from].AddIceCandidate(candidate);
                 Debug.Log($"Added Remote ICE Candidate: {candidate.Candidate}");
+            } else {
+                if (_remoteIceCandidatesMap.ContainsKey(message.from)) {
+                    _remoteIceCandidatesMap[message.from].Add(candidate);
+                }
+                else {
+                    _remoteIceCandidatesMap.Add(message.from, new() { candidate });
+                }
+                
+                Debug.Log($"Queued Remote ICE Candidate: {candidate.Candidate}");
             }
         }
 
@@ -396,7 +391,6 @@ namespace LiteP2PNet {
             }
 
             _myIceCandidatesMap.Remove(peerId);
-            _remoteIceCandidatesMap.Remove(peerId);
             _isConnectionEstablishedMap.Remove(peerId);
             _isDescriptionReadyMap.Remove(peerId);
             _latencyMap.Remove(peerId);
@@ -465,10 +459,8 @@ namespace LiteP2PNet {
             _signaling?.DispatchMessageQueue();
             #endif
 
-            foreach (var key in _incomingMessageMap.Keys) {
-                while (_incomingMessageMap[key].TryDequeue(out var message)) {
-                    StartCoroutine(HandleSignalingMessage(message));
-                }
+            while (_incomingMessageQueue.TryDequeue(out var message)) {
+                StartCoroutine(HandleSignalingMessage(message));
             }
         }
 
