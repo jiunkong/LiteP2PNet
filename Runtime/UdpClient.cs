@@ -43,6 +43,9 @@ namespace LiteP2PNet {
 
         private string _userId;
         private string _serverUrl;
+        private int _bursts;
+        private int _burstInterval;
+        private int _maxBurstRounds;
 
         private List<RTCIceServer> _iceServers = new();
 
@@ -70,11 +73,14 @@ namespace LiteP2PNet {
             return _latencyMap.TryGetValue(peerId, out latency);
         }
 
-        public void Init(string serverUrl, string userId, string[] stunServers = null, string[] turnServers = null, bool debugLog = false) {
+        public void Init(string serverUrl, string userId, string[] stunServers = null, string[] turnServers = null, bool debugLog = false, int udpBursts = 5, int udpBurstInterval = 150, int udpMaxBurstRounds = 4) {
             _userId = userId;
             _serverUrl = serverUrl;
             isConnectedToServer = false;
             _debugLog = debugLog;
+            _bursts = udpBursts;
+            _burstInterval = udpBurstInterval;
+            _maxBurstRounds = udpMaxBurstRounds;
 
             if (stunServers != null) {
                 foreach (var stun in stunServers) {
@@ -346,7 +352,7 @@ namespace LiteP2PNet {
             if (_debugLog) Debug.Log($"Received UDP info from {message.from}: {udpInfo.ip}:{udpInfo.port}");
         }
 
-        private IEnumerator HandleConnectionRequest(SignalingMessage message, int bursts = 5, int burstInterval = 150, int maxBurstRounds = 4) {
+        private IEnumerator HandleConnectionRequest(SignalingMessage message) {
             var request = JsonUtility.FromJson<ConnectionRequest>(message.body);
 
             _connectionKeyMap[request.target] = request.key;
@@ -356,16 +362,16 @@ namespace LiteP2PNet {
                 var remoteEndPoint = new IPEndPoint(IPAddress.Parse(udpInfo.ip), udpInfo.port);
 
                 byte[] msg = System.Text.Encoding.UTF8.GetBytes($"hole-punching:{_userId}:{request.key}");
-                int maxTotalJitter = burstInterval / 10 * bursts;
-                for (int round = 0; round < maxBurstRounds; round++) {
+                int maxTotalJitter = _burstInterval / 10 * _bursts;
+                for (int round = 0; round < _maxBurstRounds; round++) {
                     int totalJitter = 0;
-                    for (int i = 0; i < bursts; i++) {
+                    for (int i = 0; i < _bursts; i++) {
                         _netManager.SendUnconnectedMessage(msg, remoteEndPoint);
                         if (_debugLog) Debug.Log($"Sent UDP hole punching message to {request.target} at {udpInfo.ip}:{udpInfo.port}");
 
-                        int jitter = UnityEngine.Random.Range(-burstInterval / 10, burstInterval / 10);
+                        int jitter = UnityEngine.Random.Range(-_burstInterval / 10, _burstInterval / 10);
                         totalJitter += jitter;
-                        yield return new WaitForSeconds((burstInterval + jitter) / 1000f);
+                        yield return new WaitForSeconds((_burstInterval + jitter) / 1000f);
                     }
 
                     // connection check
@@ -373,7 +379,7 @@ namespace LiteP2PNet {
                         yield break;
                     }
 
-                    if (round < maxBurstRounds - 1 && _debugLog) Debug.Log("Failed to establish UDP connection, retrying...");
+                    if (round < _maxBurstRounds - 1 && _debugLog) Debug.Log("Failed to establish UDP connection, retrying...");
                     yield return new WaitForSeconds((maxTotalJitter - totalJitter) / 1000f);
                 }
 
