@@ -89,6 +89,7 @@ namespace LiteP2PNet {
             }
 
             _netManager = new NetManager(this);
+            _netManager.UnconnectedMessagesEnabled = true;
             _netManager.Start();
         }
 
@@ -109,6 +110,7 @@ namespace LiteP2PNet {
 
             _signaling.OnMessage += (bytes) => {
                 var message = System.Text.Encoding.UTF8.GetString(bytes);
+                Debug.Log(message);
                 var signalingMessage = JsonUtility.FromJson<SignalingMessage>(message);
                 _incomingMessageQueue.Enqueue(signalingMessage);
             };
@@ -243,7 +245,7 @@ namespace LiteP2PNet {
                     HandleUdpInfo(message);
                     break;
                 case "connect":
-                    yield return BeginConnection(message);
+                    yield return HandleConnectionRequest(message);
                     break;
                 case "user-change":
                     break;
@@ -344,7 +346,7 @@ namespace LiteP2PNet {
             if (_debugLog) Debug.Log($"Received UDP info from {message.from}: {udpInfo.ip}:{udpInfo.port}");
         }
 
-        private IEnumerator BeginConnection(SignalingMessage message, int bursts = 5, int burstInterval = 150, int maxBurstRounds = 4) {
+        private IEnumerator HandleConnectionRequest(SignalingMessage message, int bursts = 5, int burstInterval = 150, int maxBurstRounds = 4) {
             var request = JsonUtility.FromJson<ConnectionRequest>(message.body);
 
             _connectionKeyMap[request.target] = request.key;
@@ -371,9 +373,11 @@ namespace LiteP2PNet {
                         yield break;
                     }
 
-                    if (_debugLog) Debug.Log("Failed to establish UDP connection, retrying...");
+                    if (round < maxBurstRounds - 1 && _debugLog) Debug.Log("Failed to establish UDP connection, retrying...");
                     yield return new WaitForSeconds((maxTotalJitter - totalJitter) / 1000f);
                 }
+
+                Debug.LogWarning($"Failed to establish UDP connection with {request.target} after multiple attempts.");
             }
         }
 
