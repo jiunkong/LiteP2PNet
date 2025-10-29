@@ -28,7 +28,23 @@ namespace LiteP2PNet {
             }
         }
 
-        private readonly Regex _udpInfoPattern = new(@"(\d{1,3}(?:\.\d{1,3}){3}) (\d+)");
+        private static readonly Regex _udpInfoPattern = new(@"(\d{1,3}(?:\.\d{1,3}){3}) (\d+)");
+        private static bool ExtractUdpInfo(IEnumerable<RTCIceCandidate> candidates, string constraint, out UdpInfo udpInfo) {
+            foreach (var c in candidates) {
+                if (constraint != null && !c.Candidate.Contains(constraint)) continue;
+
+                var match = _udpInfoPattern.Match(c.Candidate);
+                if (match.Success) {
+                    string ip = match.Groups[1].Value;
+                    int port = int.Parse(match.Groups[2].Value);
+                    udpInfo = new UdpInfo { ip = ip, port = port };
+                    return true;
+                }
+            }
+
+            udpInfo = null;
+            return false;
+        }
 
         private WebSocket _signaling;
         private Dictionary<string, RTCPeerConnection> _peerConnectionMap = new();
@@ -37,12 +53,16 @@ namespace LiteP2PNet {
         private Dictionary<string, List<RTCIceCandidate>> _remoteIceCandidatesMap = new();
         private ConcurrentQueue<SignalingMessage> _incomingMessageQueue = new();
         private PairMap<string, UdpInfo> _udpInfoBiMap = new();
+        private Dictionary<string, bool> _udpInfoSentMap = new();
 
         private Dictionary<string, string> _connectionKeyMap = new();
         private PairMap<string, NetPeer> _peerBiMap = new();
 
         private string _userId;
         private string _serverUrl;
+        private int _bursts;
+        private int _burstInterval;
+        private int _maxBurstRounds;
 
         private List<RTCIceServer> _iceServers = new();
 
@@ -70,11 +90,14 @@ namespace LiteP2PNet {
             return _latencyMap.TryGetValue(peerId, out latency);
         }
 
-        public void Init(string serverUrl, string userId, string[] stunServers = null, string[] turnServers = null, bool debugLog = false) {
+        public void Init(string serverUrl, string userId, string[] stunServers = null, string[] turnServers = null, bool debugLog = false, int udpBursts = 5, int udpBurstInterval = 150, int udpMaxBurstRounds = 4) {
             _userId = userId;
             _serverUrl = serverUrl;
             isConnectedToServer = false;
             _debugLog = debugLog;
+            _bursts = udpBursts;
+            _burstInterval = udpBurstInterval;
+            _maxBurstRounds = udpMaxBurstRounds;
 
             if (stunServers != null) {
                 foreach (var stun in stunServers) {
@@ -132,6 +155,7 @@ namespace LiteP2PNet {
             _peerBiMap = new();
             _connectionKeyMap = new();
             _latencyMap = new();
+            _udpInfoSentMap = new();
 
             SetupSignaling();
 
@@ -188,7 +212,7 @@ namespace LiteP2PNet {
                     }
                     if (_debugLog) Debug.Log($"New Local ICE candidate for {peerId}: {candidate.Candidate}");
 
-                    SendSignalingMessage("ice-candidate", peerId, new IceCandidateData{
+                    SendSignalingMessage("ice-candidate", peerId, new IceCandidateData {
                         candidate = candidate.Candidate,
                         sdpMid = candidate.SdpMid,
                         sdpMLineIndex = new NullableInt(candidate.SdpMLineIndex)
@@ -202,32 +226,70 @@ namespace LiteP2PNet {
                 switch (state) {
                     case RTCIceConnectionState.Connected:
                     case RTCIceConnectionState.Completed:
+                        if (_udpInfoSentMap.ContainsKey(peerId) && _udpInfoSentMap[peerId]) {
+                            // already sent udp info
+                            return;
+                        }
+
                         if (!_isConnectionEstablishedMap.ContainsKey(peerId) || !_isConnectionEstablishedMap[peerId]) {
                             _isConnectionEstablishedMap.Add(peerId, true);
                             if (_debugLog) Debug.Log($"WebSocket connection established with {peerId}");
 
-                            foreach (var candidate in _myIceCandidatesMap[peerId]) {
-                                if (candidate.Candidate.Contains("udp")) {
-                                    var match = _udpInfoPattern.Match(candidate.Candidate);
-                                    if (match.Success) {
-                                        string ip = match.Groups[1].Value;
-                                        int port = int.Parse(match.Groups[2].Value);
-
-                                        SendSignalingMessage("udp-info", peerId, new UdpInfo {
-                                            ip = ip,
-                                            port = port
-                                        });
-
-                                        break;
-                                    }
-                                }
-                            }
+                            SendUdpInfo(peerId);
                         }
                         break;
                 }
             };
 
             _peerConnectionMap.Add(peerId, connection);
+        }
+        
+        private void SendUdpInfo(string peerId) {
+            if (!_remoteIceCandidatesMap.ContainsKey(peerId)) {
+                if (_debugLog) Debug.LogWarning($"No remote ICE candidates for {peerId}, cannot send UDP info");
+                return;
+            }
+
+            if (!_myIceCandidatesMap.ContainsKey(peerId)) {
+                if (_debugLog) Debug.LogWarning($"No local ICE candidates for {peerId}, cannot send UDP info");
+                return;
+            }
+
+            var remoteCandidates = _remoteIceCandidatesMap[peerId].Where(c => c.Candidate.Contains("udp"));
+            var localCandidates = _myIceCandidatesMap[peerId].Where(c => c.Candidate.Contains("udp"));
+
+            UdpInfo remoteSrflxInfo, localSrflxInfo, localUdpInfo;
+
+            // Get Remote Srflx UDP Info
+            ExtractUdpInfo(remoteCandidates, "typ srflx", out remoteSrflxInfo);
+            // Get Local Srflx UDP Info
+            ExtractUdpInfo(localCandidates, "typ srflx", out localSrflxInfo);
+
+            // check if they are on same NAT
+            if (remoteSrflxInfo.ip == localSrflxInfo.ip) {
+                if (ExtractUdpInfo(localCandidates, "typ host", out localUdpInfo)) {
+                    // send private ip
+                    SendSignalingMessage("udp-info", peerId, localUdpInfo);
+                    _udpInfoSentMap[peerId] = true;
+                    return;
+                }
+            }
+
+            // send public ip
+            if (ExtractUdpInfo(localCandidates, "typ srflx", out localUdpInfo)) {
+                SendSignalingMessage("udp-info", peerId, localUdpInfo);
+                _udpInfoSentMap[peerId] = true;
+                return;
+            }
+
+            // send any
+            if (ExtractUdpInfo(localCandidates, null, out localUdpInfo)) {
+                SendSignalingMessage("udp-info", peerId, localUdpInfo);
+                _udpInfoSentMap[peerId] = true;
+                return;
+            } else {
+                if (_debugLog) Debug.LogWarning($"Failed to extract any UDP info to send to {peerId}");
+            }
         }
 
         private IEnumerator HandleSignalingMessage(SignalingMessage message) {
@@ -346,7 +408,7 @@ namespace LiteP2PNet {
             if (_debugLog) Debug.Log($"Received UDP info from {message.from}: {udpInfo.ip}:{udpInfo.port}");
         }
 
-        private IEnumerator HandleConnectionRequest(SignalingMessage message, int bursts = 5, int burstInterval = 150, int maxBurstRounds = 4) {
+        private IEnumerator HandleConnectionRequest(SignalingMessage message) {
             var request = JsonUtility.FromJson<ConnectionRequest>(message.body);
 
             _connectionKeyMap[request.target] = request.key;
@@ -356,16 +418,16 @@ namespace LiteP2PNet {
                 var remoteEndPoint = new IPEndPoint(IPAddress.Parse(udpInfo.ip), udpInfo.port);
 
                 byte[] msg = System.Text.Encoding.UTF8.GetBytes($"hole-punching:{_userId}:{request.key}");
-                int maxTotalJitter = burstInterval / 10 * bursts;
-                for (int round = 0; round < maxBurstRounds; round++) {
+                int maxTotalJitter = _burstInterval / 10 * _bursts;
+                for (int round = 0; round < _maxBurstRounds; round++) {
                     int totalJitter = 0;
-                    for (int i = 0; i < bursts; i++) {
+                    for (int i = 0; i < _bursts; i++) {
                         _netManager.SendUnconnectedMessage(msg, remoteEndPoint);
                         if (_debugLog) Debug.Log($"Sent UDP hole punching message to {request.target} at {udpInfo.ip}:{udpInfo.port}");
 
-                        int jitter = UnityEngine.Random.Range(-burstInterval / 10, burstInterval / 10);
+                        int jitter = UnityEngine.Random.Range(-_burstInterval / 10, _burstInterval / 10);
                         totalJitter += jitter;
-                        yield return new WaitForSeconds((burstInterval + jitter) / 1000f);
+                        yield return new WaitForSeconds((_burstInterval + jitter) / 1000f);
                     }
 
                     // connection check
@@ -373,7 +435,7 @@ namespace LiteP2PNet {
                         yield break;
                     }
 
-                    if (round < maxBurstRounds - 1 && _debugLog) Debug.Log("Failed to establish UDP connection, retrying...");
+                    if (round < _maxBurstRounds - 1 && _debugLog) Debug.Log("Failed to establish UDP connection, retrying...");
                     yield return new WaitForSeconds((maxTotalJitter - totalJitter) / 1000f);
                 }
 
@@ -401,6 +463,7 @@ namespace LiteP2PNet {
             _udpInfoBiMap.RemoveByFirst(peerId);
             _connectionKeyMap.Remove(peerId);
             _peerBiMap.RemoveByFirst(peerId);
+            _udpInfoSentMap.Remove(peerId);
         }
 
         public void OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo) {
