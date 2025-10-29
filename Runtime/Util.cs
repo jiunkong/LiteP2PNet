@@ -1,7 +1,31 @@
 
 using System.Collections.Generic;
+using System.Net;
 
 namespace LiteP2PNet {
+    public static class IpUtil {
+        public static bool IsPrivateIPv4(string ipAddress) {
+            if (!IPAddress.TryParse(ipAddress, out var ip))
+                return false;
+
+            var bytes = ip.GetAddressBytes();
+
+            // 10.0.0.0 ~ 10.255.255.255
+            if (bytes[0] == 10)
+                return true;
+
+            // 172.16.0.0 ~ 172.31.255.255
+            if (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31)
+                return true;
+
+            // 192.168.0.0 ~ 192.168.255.255
+            if (bytes[0] == 192 && bytes[1] == 168)
+                return true;
+
+            return false;
+        }
+    }
+    
     public class PairMap<T1, T2> {
         private readonly Dictionary<T1, T2> _map1 = new();
         private readonly Dictionary<T2, T1> _map2 = new();

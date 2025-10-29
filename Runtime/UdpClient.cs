@@ -29,9 +29,9 @@ namespace LiteP2PNet {
         }
 
         private static readonly Regex _udpInfoPattern = new(@"(\d{1,3}(?:\.\d{1,3}){3}) (\d+)");
-        private static bool ExtractUdpInfo(IEnumerable<RTCIceCandidate> candidates, string constraint, out UdpInfo udpInfo) {
+        private static bool ExtractUdpInfo(IEnumerable<RTCIceCandidate> candidates, Func<string, bool> filter, out UdpInfo udpInfo) {
             foreach (var c in candidates) {
-                if (constraint != null && !c.Candidate.Contains(constraint)) continue;
+                if (filter != null && !filter.Invoke(c.Candidate)) continue;
 
                 var match = _udpInfoPattern.Match(c.Candidate);
                 if (match.Success) {
@@ -261,13 +261,14 @@ namespace LiteP2PNet {
             UdpInfo remoteSrflxInfo, localSrflxInfo, localUdpInfo;
 
             // Get Remote Srflx UDP Info
-            ExtractUdpInfo(remoteCandidates, "typ srflx", out remoteSrflxInfo);
+            ExtractUdpInfo(remoteCandidates, (c) => c.Contains("typ srflx"), out remoteSrflxInfo);
             // Get Local Srflx UDP Info
-            ExtractUdpInfo(localCandidates, "typ srflx", out localSrflxInfo);
+            ExtractUdpInfo(localCandidates, (c) => c.Contains("typ srflx"), out localSrflxInfo);
 
             // check if they are on same NAT
             if (remoteSrflxInfo.ip == localSrflxInfo.ip) {
-                if (ExtractUdpInfo(localCandidates, "typ host", out localUdpInfo)) {
+                if (_debugLog) Debug.Log($"Peers {peerId} appear to be on the same NAT, sending local UDP info");
+                if (ExtractUdpInfo(localCandidates, (c) => c.Contains("typ host") && IpUtil.IsPrivateIPv4(c), out localUdpInfo)) {
                     // send private ip
                     SendSignalingMessage("udp-info", peerId, localUdpInfo);
                     _udpInfoSentMap[peerId] = true;
@@ -275,8 +276,10 @@ namespace LiteP2PNet {
                 }
             }
 
+            if (_debugLog) Debug.Log($"Peers {peerId} appear to be on different NATs, sending public UDP info");
+
             // send public ip
-            if (ExtractUdpInfo(localCandidates, "typ srflx", out localUdpInfo)) {
+            if (ExtractUdpInfo(localCandidates, (c) => c.Contains("typ srflx"), out localUdpInfo)) {
                 SendSignalingMessage("udp-info", peerId, localUdpInfo);
                 _udpInfoSentMap[peerId] = true;
                 return;
