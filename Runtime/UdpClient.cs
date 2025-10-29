@@ -246,7 +246,7 @@ namespace LiteP2PNet {
         
         private void SendUdpInfo(string peerId) {
             if (!_remoteIceCandidatesMap.ContainsKey(peerId)) {
-                if (_debugLog) Debug.LogWarning($"No remote ICE candidates for {peerId}, cannot send UDP info");
+                if (_debugLog) Debug.LogWarning($"No Peer Connection for {peerId}, cannot send UDP info");
                 return;
             }
 
@@ -356,7 +356,7 @@ namespace LiteP2PNet {
                     if (_debugLog) Debug.Log($"Processing Queued Remote ICE Candidate: {c.Candidate}");
                     _peerConnectionMap[peerId]?.AddIceCandidate(c);
                 }
-                _remoteIceCandidatesMap.Remove(peerId);
+                //_remoteIceCandidatesMap.Remove(peerId);
             }
         }
 
@@ -390,14 +390,13 @@ namespace LiteP2PNet {
                 _peerConnectionMap[message.from].AddIceCandidate(candidate);
                 Debug.Log($"Added Remote ICE Candidate: {candidate.Candidate}");
             } else {
-                if (_remoteIceCandidatesMap.ContainsKey(message.from)) {
-                    _remoteIceCandidatesMap[message.from].Add(candidate);
-                }
-                else {
-                    _remoteIceCandidatesMap.Add(message.from, new() { candidate });
-                }
-                
                 Debug.Log($"Queued Remote ICE Candidate: {candidate.Candidate}");
+            }
+            
+            if (_remoteIceCandidatesMap.ContainsKey(message.from)) {
+                _remoteIceCandidatesMap[message.from].Add(candidate);
+            } else {
+                _remoteIceCandidatesMap.Add(message.from, new() { candidate });
             }
         }
 
@@ -457,6 +456,7 @@ namespace LiteP2PNet {
             }
 
             _myIceCandidatesMap.Remove(peerId);
+            _remoteIceCandidatesMap.Remove(peerId);
             _isConnectionEstablishedMap.Remove(peerId);
             _isDescriptionReadyMap.Remove(peerId);
             _latencyMap.Remove(peerId);
