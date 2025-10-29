@@ -1,6 +1,8 @@
 
+using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Threading;
 
 namespace LiteP2PNet {
     public static class IpUtil {
@@ -41,6 +43,16 @@ namespace LiteP2PNet {
         private readonly Dictionary<T1, T2> _map1 = new();
         private readonly Dictionary<T2, T1> _map2 = new();
         private readonly object _lock = new();
+
+        public int Count => _map1.Count;
+        public IEnumerable<(T1, T2)> Pairs {
+            get {
+                lock (_lock) {
+                    foreach (var kvp in _map1)
+                        yield return (kvp.Key, kvp.Value);
+                }
+            }
+        }
 
         public T2 this[T1 key1] {
             get {

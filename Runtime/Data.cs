@@ -25,6 +25,7 @@ namespace LiteP2PNet {
     [Serializable]
     public class ConnectionRequest {
         public string target;
+        public bool doConnect;
         public string key;
     }
 

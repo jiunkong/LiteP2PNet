@@ -437,9 +437,11 @@ namespace LiteP2PNet {
 
                 if (IpUtil.IsPrivateIPv4(udpInfo.ip)) {
                     // direct connection
-                    if (_debugLog) Debug.Log($"Attempting direct UDP connection to {request.target} at {udpInfo.ip}:{udpInfo.port}");
-                    var peer = _netManager.Connect(remoteEndPoint, request.key);
-                    _peerBiMap[request.target] = peer;
+                    if (request.doConnect) {
+                        if (_debugLog) Debug.Log($"Attempting direct UDP connection to {request.target} at {udpInfo.ip}:{udpInfo.port}");
+                        var peer = _netManager.Connect(remoteEndPoint, request.key);
+                        _peerBiMap[request.target] = peer;
+                    }
                     yield break;
                 } else {
                     // start udp hole punching
