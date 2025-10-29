@@ -281,6 +281,7 @@ namespace LiteP2PNet {
             if (remoteSrflxInfo.ip == localSrflxInfo.ip) {
                 if (_debugLog) Debug.Log($"Peers {peerId} appear to be on the same NAT, sending local UDP info");
                 if (ExtractUdpInfo(localCandidates, "typ host", out localUdpInfo, onlyPrivate: true)) {
+                    localUdpInfo.port = _netManager.LocalPort;
                     // send private ip
                     SendSignalingMessage("udp-info", peerId, localUdpInfo);
                     _udpInfoSentMap[peerId] = true;
@@ -294,6 +295,7 @@ namespace LiteP2PNet {
 
             // send public ip
             if (ExtractUdpInfo(localCandidates, "typ srflx", out localUdpInfo)) {
+                localUdpInfo.port = _netManager.LocalPort;
                 SendSignalingMessage("udp-info", peerId, localUdpInfo);
                 _udpInfoSentMap[peerId] = true;
                 return;
@@ -301,6 +303,7 @@ namespace LiteP2PNet {
 
             // send any
             if (ExtractUdpInfo(localCandidates, null, out localUdpInfo)) {
+                localUdpInfo.port = _netManager.LocalPort;
                 SendSignalingMessage("udp-info", peerId, localUdpInfo);
                 _udpInfoSentMap[peerId] = true;
                 return;
@@ -435,7 +438,8 @@ namespace LiteP2PNet {
                 if (IpUtil.IsPrivateIPv4(udpInfo.ip)) {
                     // direct connection
                     if (_debugLog) Debug.Log($"Attempting direct UDP connection to {request.target} at {udpInfo.ip}:{udpInfo.port}");
-                    _netManager.Connect(remoteEndPoint, request.key);
+                    var peer = _netManager.Connect(remoteEndPoint, request.key);
+                    _peerBiMap[request.target] = peer;
                     yield break;
                 } else {
                     // start udp hole punching
@@ -493,8 +497,9 @@ namespace LiteP2PNet {
         public void OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo) {
             if (_debugLog) Debug.Log("Disconnected from peer: " + peer.Address + ":" + peer.Port);
 
-            string peerId = _peerBiMap[peer];
-            CleanUpPeer(peerId);
+            if (_peerBiMap.TryGetBySecond(peer, out var peerId)) {
+                CleanUpPeer(peerId);
+            }
         }
 
         public void OnNetworkError(IPEndPoint endPoint, SocketError socketError) {
@@ -515,7 +520,8 @@ namespace LiteP2PNet {
 
             // Handle hole punching message
             if (parts[0] == "hole-punching" && _connectionKeyMap.TryGetValue(parts[1], out var key) && parts[2] == key) {
-                _netManager.Connect(remoteEndPoint, key);
+                var peer = _netManager.Connect(remoteEndPoint, key);
+                _peerBiMap[parts[1]] = peer;
             }
         }
 
