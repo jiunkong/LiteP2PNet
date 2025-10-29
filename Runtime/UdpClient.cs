@@ -30,9 +30,10 @@ namespace LiteP2PNet {
 
         private static readonly Regex _udpInfoPattern = new(@"(\d{1,3}(?:\.\d{1,3}){3}) (\d+)");
         private static bool ExtractUdpInfo(IEnumerable<RTCIceCandidate> candidates, string typ, out UdpInfo udpInfo, bool onlyPrivate = false) {
-            foreach (var c in candidates) {
-                if (typ != null && !c.Candidate.Contains(typ)) continue;
+            var filtered = candidates.Where(c => typ == null || c.Candidate.Contains(typ));
+            List<UdpInfo> infoList = new();
 
+            foreach (var c in filtered) {
                 var match = _udpInfoPattern.Match(c.Candidate);
                 if (match.Success) {
                     string ip = match.Groups[1].Value;
@@ -40,9 +41,17 @@ namespace LiteP2PNet {
 
                     if (onlyPrivate && !IpUtil.IsPrivateIPv4(ip)) continue;
 
-                    udpInfo = new UdpInfo { ip = ip, port = port };
-                    return true;
+                    infoList.Add(new UdpInfo { ip = ip, port = port });
                 }
+            }
+
+            if (onlyPrivate) {
+                infoList = infoList.OrderByDescending(info => IpUtil.GetPrivatePriority(info.ip)).ToList();
+            }
+
+            if (infoList.Count > 0) {
+                udpInfo = infoList[0];
+                return true;
             }
 
             udpInfo = null;

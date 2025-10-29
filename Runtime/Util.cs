@@ -24,6 +24,17 @@ namespace LiteP2PNet {
 
             return false;
         }
+
+        public static int GetPrivatePriority(string ip)
+        {
+            if (!IPAddress.TryParse(ip, out var ipAddr))
+                return 0;
+            var b = ipAddr.GetAddressBytes();
+            if (b[0] == 192 && b[1] == 168) return 3;
+            if (b[0] == 10) return 2;
+            if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return 1;
+            return 0;
+        }
     }
     
     public class PairMap<T1, T2> {
