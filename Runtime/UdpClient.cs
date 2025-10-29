@@ -258,7 +258,7 @@ namespace LiteP2PNet {
         
         private void SendUdpInfo(string peerId) {
             if (!_remoteIceCandidatesMap.ContainsKey(peerId)) {
-                if (_debugLog) Debug.LogWarning($"No Peer Connection for {peerId}, cannot send UDP info");
+                if (_debugLog) Debug.LogWarning($"No remote ICE candidates for {peerId}, cannot send UDP info");
                 return;
             }
 
@@ -428,34 +428,41 @@ namespace LiteP2PNet {
             var request = JsonUtility.FromJson<ConnectionRequest>(message.body);
 
             _connectionKeyMap[request.target] = request.key;
-
-            // start udp hole punching
+            
             if (_udpInfoBiMap.TryGetByFirst(request.target, out var udpInfo)) {
                 var remoteEndPoint = new IPEndPoint(IPAddress.Parse(udpInfo.ip), udpInfo.port);
 
-                byte[] msg = System.Text.Encoding.UTF8.GetBytes($"hole-punching:{_userId}:{request.key}");
-                int maxTotalJitter = _burstInterval / 10 * _bursts;
-                for (int round = 0; round < _maxBurstRounds; round++) {
-                    int totalJitter = 0;
-                    for (int i = 0; i < _bursts; i++) {
-                        _netManager.SendUnconnectedMessage(msg, remoteEndPoint);
-                        if (_debugLog) Debug.Log($"Sent UDP hole punching message to {request.target} at {udpInfo.ip}:{udpInfo.port}");
+                if (IpUtil.IsPrivateIPv4(udpInfo.ip)) {
+                    // direct connection
+                    if (_debugLog) Debug.Log($"Attempting direct UDP connection to {request.target} at {udpInfo.ip}:{udpInfo.port}");
+                    _netManager.Connect(remoteEndPoint, request.key);
+                    yield break;
+                } else {
+                    // start udp hole punching
+                    byte[] msg = System.Text.Encoding.UTF8.GetBytes($"hole-punching:{_userId}:{request.key}");
+                    int maxTotalJitter = _burstInterval / 10 * _bursts;
+                    for (int round = 0; round < _maxBurstRounds; round++) {
+                        int totalJitter = 0;
+                        for (int i = 0; i < _bursts; i++) {
+                            _netManager.SendUnconnectedMessage(msg, remoteEndPoint);
+                            if (_debugLog) Debug.Log($"Sent UDP hole punching message to {request.target} at {udpInfo.ip}:{udpInfo.port}");
 
-                        int jitter = UnityEngine.Random.Range(-_burstInterval / 10, _burstInterval / 10);
-                        totalJitter += jitter;
-                        yield return new WaitForSeconds((_burstInterval + jitter) / 1000f);
+                            int jitter = UnityEngine.Random.Range(-_burstInterval / 10, _burstInterval / 10);
+                            totalJitter += jitter;
+                            yield return new WaitForSeconds((_burstInterval + jitter) / 1000f);
+                        }
+
+                        // connection check
+                        if (_peerBiMap.ContainsFirst(request.target) && _peerBiMap[request.target].ConnectionState == ConnectionState.Connected) {
+                            yield break;
+                        }
+
+                        if (round < _maxBurstRounds - 1 && _debugLog) Debug.Log("Failed to establish UDP connection, retrying...");
+                        yield return new WaitForSeconds((maxTotalJitter - totalJitter) / 1000f);
                     }
 
-                    // connection check
-                    if (_peerBiMap.ContainsFirst(request.target) && _peerBiMap[request.target].ConnectionState == ConnectionState.Connected) {
-                        yield break;
-                    }
-
-                    if (round < _maxBurstRounds - 1 && _debugLog) Debug.Log("Failed to establish UDP connection, retrying...");
-                    yield return new WaitForSeconds((maxTotalJitter - totalJitter) / 1000f);
+                    Debug.LogWarning($"Failed to establish UDP connection with {request.target} after multiple attempts.");
                 }
-
-                Debug.LogWarning($"Failed to establish UDP connection with {request.target} after multiple attempts.");
             }
         }
 
