@@ -23,19 +23,6 @@ namespace LiteP2PNet {
     }
 
     [Serializable]
-    public class ConnectionRequest {
-        public string target;
-        public bool doConnect;
-        public string key;
-    }
-
-    [Serializable]
-    public class UdpInfo {
-        public string ip;
-        public int port;
-    }
-
-    [Serializable]
     public class NullableInt {
         public int value;
         public bool hasValue;
