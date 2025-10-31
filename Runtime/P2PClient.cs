@@ -5,6 +5,7 @@ using UnityEngine;
 using System;
 using System.Collections.Concurrent;
 using System.Collections;
+using System.Text;
 
 namespace LiteP2PNet {
     public class P2PClient : MonoBehaviour {
@@ -28,6 +29,7 @@ namespace LiteP2PNet {
         private Dictionary<string, List<RTCIceCandidate>> _myIceCandidatesMap = new();
         private Dictionary<string, List<RTCIceCandidate>> _remoteIceCandidatesMap = new();
         private ConcurrentQueue<SignalingMessage> _incomingMessageQueue = new();
+        private Dictionary<string, bool> _isDescriptionReadyMap = new();
 
         private string _userId;
         private string _serverUrl;
@@ -38,8 +40,16 @@ namespace LiteP2PNet {
 
         private bool _debugLog = false;
 
-        private Dictionary<string, bool> _isConnectionEstablishedMap = new();
-        private Dictionary<string, bool> _isDescriptionReadyMap = new();
+        private Dictionary<string, List<RTCDataChannel>> _dataChannelListMap = new();
+
+        delegate void BytesHandler(string peerId, byte[] data, SendOption? option);
+        delegate void StringHandler(string peerId, string data, SendOption? option);
+        private class HandlerGroup {
+            public BytesHandler bytesHandler;
+            public StringHandler stringHandler;
+        }
+
+        private Dictionary<string, HandlerGroup> _handlerMap = new();
 
         void Awake() {
             if (_instance != null && _instance != this)
@@ -68,6 +78,8 @@ namespace LiteP2PNet {
         }
 
         public void Init(string serverUrl, string userId, string[] stunServers = null, string[] turnServers = null, bool debugLog = false) {
+            if (userId.Length > 256) throw new Exception("User ID must be less than 256 characters");
+            
             _userId = userId;
             _serverUrl = serverUrl;
             isConnectedToServer = false;
@@ -114,7 +126,8 @@ namespace LiteP2PNet {
                 { "lobby-id", lobbyId }
             });
 
-            _isConnectionEstablishedMap = new();
+            _dataChannelListMap = new();
+            _handlerMap = new();
             _isDescriptionReadyMap = new();
             _peerConnectionMap = new();
             _myIceCandidatesMap = new();
@@ -167,7 +180,6 @@ namespace LiteP2PNet {
             }
 
             _myIceCandidatesMap.Remove(peerId);
-            _isConnectionEstablishedMap.Remove(peerId);
             _isDescriptionReadyMap.Remove(peerId);
         }
 
@@ -175,7 +187,21 @@ namespace LiteP2PNet {
             var config = new RTCConfiguration { iceServers = _iceServers.ToArray() };
 
             var connection = new RTCPeerConnection(ref config);
-            var channel = connection.CreateDataChannel("data"); // Create a data channel
+
+            List<RTCDataChannel> channels = new() {
+                connection.CreateDataChannel("OrderedReliable", new RTCDataChannelInit { ordered = true }),
+                connection.CreateDataChannel("OrderedUnReliable", new RTCDataChannelInit { ordered = true, maxRetransmits = 0 }),
+                connection.CreateDataChannel("UnorderedReliable", new RTCDataChannelInit { ordered = false }),
+                connection.CreateDataChannel("UnorderedUnreliable", new RTCDataChannelInit { ordered = false, maxRetransmits = 0 })
+            };
+
+            _handlerMap[peerId] = new();
+
+            foreach (var channel in channels) {
+                channel.OnMessage += (rawdata) => {
+                    HandleDataChannel(peerId, rawdata);
+                };
+            }
 
             if (_debugLog) Debug.Log($"Created peer connection for {peerId}");
 
@@ -198,37 +224,40 @@ namespace LiteP2PNet {
 
             connection.OnIceConnectionChange = state => {
                 if (_debugLog) Debug.Log($"ICE connection state for {peerId}: {state}");
-
-                switch (state) {
-                    case RTCIceConnectionState.Connected:
-                    case RTCIceConnectionState.Completed:
-                        if (!_isConnectionEstablishedMap.ContainsKey(peerId) || !_isConnectionEstablishedMap[peerId]) {
-                            _isConnectionEstablishedMap.Add(peerId, true);
-                            if (_debugLog) Debug.Log($"WebSocket connection established with {peerId}");
-
-
-                        }
-                        break;
-                }
-            };
-            
-            connection.OnDataChannel = channel => {
-                channel.OnOpen = () => {
-                    if (_debugLog) Debug.Log($"Data channel opened with {peerId}");
-                };
-
-                channel.OnClose = () => {
-                    if (_debugLog) Debug.Log($"Data channel closed with {peerId}");
-                };
-
-                channel.OnMessage = bytes => {
-                    if (_debugLog) Debug.Log($"Received message from {peerId}: {System.Text.Encoding.UTF8.GetString(bytes)}");
-                };
             };
 
             _peerConnectionMap.Add(peerId, connection);
+            _dataChannelListMap.Add(peerId, channels);
         }
 
+        private void HandleDataChannel(string peerId, byte[] rawdata) {
+            if (!_handlerMap.TryGetValue(peerId, out var handler)) return;
+            SendOption? option = null;
+
+            switch (rawdata[0] >> 4) {
+                case (byte)SendOption.OrderedReliable:
+                    option = SendOption.OrderedReliable;
+                    break;
+                case (byte)SendOption.OrderedUnreliable:
+                    option = SendOption.OrderedUnreliable;
+                    break;
+                case (byte)SendOption.UnorderedReliable:
+                    option = SendOption.UnorderedReliable;
+                    break;
+                case (byte)SendOption.UnorderedUnreliable:
+                    option = SendOption.UnorderedUnreliable;
+                    break;
+            }
+
+            switch (rawdata[0] >> 6) {
+                case (byte)DataType.Byte:
+                    handler.bytesHandler?.Invoke(peerId, rawdata[1..^0], option);
+                    break;
+                case (byte)DataType.String:
+                    handler.stringHandler?.Invoke(peerId, Encoding.UTF8.GetString(rawdata[1..^0]), option);
+                    break;
+            }
+        }
         private IEnumerator HandleSignalingMessage(SignalingMessage message) {
             switch (message.type) {
                 case "offer":
@@ -348,6 +377,40 @@ namespace LiteP2PNet {
                 throw new Exception("Failed to send signaling message", ex);
             }
         }
+
+        private bool SendData(string peerId, byte[] data, SendOption option) {
+            if (!_dataChannelListMap.TryGetValue(peerId, out var channels)) return false;
+
+            channels[(byte)option].Send(data);
+            return true;
+        }
+
+        public bool SendBytes(string peerId, byte[] data, SendOption option) {
+            byte prefix = 0;
+            prefix &= (byte)DataType.Byte << 6;
+            prefix &= (byte)((byte)option << 4);
+
+            List<byte> _data = new() { prefix };
+            
+            _data.AddRange(data);
+
+            return SendData(peerId, _data.ToArray(), option);
+        }
+
+        public bool SendString(string peerId, string data, SendOption option) {
+            byte prefix = 0;
+            prefix &= (byte)DataType.String << 6;
+            prefix &= (byte)((byte)option << 4);
+
+            byte[] rawdata = Encoding.UTF8.GetBytes(data);
+
+            List<byte> _data = new() { prefix };
+
+            _data.AddRange(rawdata);
+
+            return SendData(peerId, _data.ToArray(), option);
+        }
+
 
         void Update() {
             #if !UNITY_WEBGL || UNITY_EDITOR

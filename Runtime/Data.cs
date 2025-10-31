@@ -1,8 +1,26 @@
 using System;
 
+/**
+[DataType(2), SendOption(2), None(4)] [Data]
+**/
+
 namespace LiteP2PNet {
+    public enum SendOption : byte {
+        OrderedReliable = 0b00,
+        OrderedUnreliable = 0b01,
+        UnorderedReliable = 0b10,
+        UnorderedUnreliable = 0b11
+    }
+
+    internal enum DataType : byte {
+        Byte = 0b00,
+        String = 0b01,
+        Packet = 0b10,
+        RPC = 0b11,
+    }
+
     [Serializable]
-    public class SignalingMessage {
+    internal class SignalingMessage {
         public string type;
         public string from;
         public string to;
@@ -10,20 +28,20 @@ namespace LiteP2PNet {
     }
 
     [Serializable]
-    public class OfferAnswerData {
+    internal class OfferAnswerData {
         public string sdp;
         public string type;
     }
 
     [Serializable]
-    public class IceCandidateData {
+    internal class IceCandidateData {
         public string candidate;
         public string sdpMid;
         public NullableInt sdpMLineIndex;
     }
 
     [Serializable]
-    public class NullableInt {
+    internal class NullableInt {
         public int value;
         public bool hasValue;
 
