@@ -7,7 +7,7 @@ namespace LiteP2PNet {
         private static readonly PairMap<string, Type> _packetTypes = new();
 
         static PacketRegistry() {
-            var types = AppDomain.CurrentDomain.GetAssemblies().SelectMany(asm => asm.GetTypes()).Where(t => t.GetCustomAttributes<Packet>() != null);
+            var types = AppDomain.CurrentDomain.GetAssemblies().SelectMany(asm => asm.GetTypes()).Where(t => t.IsDefined(typeof(Packet)));
 
             foreach (var type in types) {
                 var packetAttr = type.GetCustomAttribute<Packet>();
@@ -15,8 +15,7 @@ namespace LiteP2PNet {
 
                 if (_packetTypes.ContainsFirst(id)) {
                     throw new InvalidOperationException(
-                        $"Packet ID '{id}' is already registered by type '{_packetTypes[id].FullName}'. " +
-                        $"Cannot register type '{type.FullName}' with the same ID."
+                        $"Packet ID '{id}' is already registered by type '{_packetTypes[id].FullName}'. "
                     );
                 }
 

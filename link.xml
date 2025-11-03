@@ -1,0 +1,7 @@
+<linker>
+  <assembly fullname="MessagePack" preserve="all"/>
+  <assembly fullname="MessagePack.Annotations" preserve="all"/>
+  <assembly fullname="System.Runtime.CompilerServices.Unsafe" preserve="all"/>
+  <assembly fullname="System.Collections.Immutable" preserve="all"/>
+  <assembly fullname="Microsoft.NET.StringTools" preserve="all"/>
+</linker>

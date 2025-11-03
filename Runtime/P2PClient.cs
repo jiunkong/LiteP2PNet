@@ -6,6 +6,8 @@ using System;
 using System.Collections.Concurrent;
 using System.Text;
 using System.Collections.Generic;
+using System.Threading.Tasks;
+using MessagePack;
 
 namespace LiteP2PNet {
     public class P2PClient : MonoBehaviour {
@@ -55,6 +57,7 @@ namespace LiteP2PNet {
         };
 
         public static Func<byte[], Type, object> packetDeserializer = (data, type) => {
+            
             string json = Encoding.UTF8.GetString(data);
             return JsonUtility.FromJson(json, type);
         };
@@ -85,6 +88,12 @@ namespace LiteP2PNet {
             }
 
             onResult(null);
+        }
+
+        public async Task<double?> GetRTTAsync(string peerId) {
+            var task = new TaskCompletionSource<double?>();
+            StartCoroutine(GetRTT(peerId, result => task.SetResult(result)));
+            return await task.Task;
         }
 
         public void Init(string serverUrl, string userId, string[] stunServers = null, string[] turnServers = null, bool debugLog = false) {
@@ -550,6 +559,21 @@ namespace LiteP2PNet {
         }
 
         #endregion
+
+    #region RPC
+
+        public void CallRpcMethod(string peerId, string methodId, SendOption option, params object[] args) {
+            byte prefix = 0;
+            prefix &= (byte)DataType.RPC << 6;
+            prefix &= (byte)((byte)option << 4);
+            prefix &= (byte)RpcType.Call;
+
+            if (RpcRegistry.GetRpcMethod(methodId) == null) throw new Exception($"Method '{methodId}' is not a rpc method. Make sure it is decorated with [RpcMethod] attribute.");
+
+
+        }
+
+    #endregion
 
         void Update() {
             #if !UNITY_WEBGL || UNITY_EDITOR

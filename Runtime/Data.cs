@@ -19,6 +19,14 @@ namespace LiteP2PNet {
         RPC = 0b11,
     }
 
+    internal enum RpcType : byte {
+        Call = 0b0000,
+        Return = 0b0001,
+        Get = 0b0010,
+        Set = 0b0011,
+        Error = 0b1111
+    }
+
     [Serializable]
     internal class SignalingMessage {
         public string type;
