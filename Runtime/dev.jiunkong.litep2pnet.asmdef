@@ -1,0 +1,11 @@
+{
+  "name": "dev.jiunkong.litep2pnet",
+  "rootNamespace": "LiteP2PNet",
+  "autoReferenced": true,
+  "overrideReferences": false,
+  "precompiledReferences": [
+    "MessagePack/MessagePack.dll",
+    "MessagePack/MessagePack.Annotations.dll",
+    "MessagePack/System.Runtime.CompilerServices.Unsafe.dll"
+  ]
+}
