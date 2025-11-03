@@ -1,11 +1,11 @@
 using Unity.WebRTC;
 using NativeWebSocket;
-using System.Collections.Generic;
+using System.Collections;
 using UnityEngine;
 using System;
 using System.Collections.Concurrent;
-using System.Collections;
 using System.Text;
+using System.Collections.Generic;
 
 namespace LiteP2PNet {
     public class P2PClient : MonoBehaviour {
@@ -42,12 +42,22 @@ namespace LiteP2PNet {
 
         private Dictionary<string, List<RTCDataChannel>> _dataChannelListMap = new();
 
-        delegate void BytesHandler(string peerId, byte[] data, SendOption? option);
-        delegate void StringHandler(string peerId, string data, SendOption? option);
         private class HandlerGroup {
-            public BytesHandler bytesHandler;
-            public StringHandler stringHandler;
+            public Action<string, byte[], SendOption?> bytesHandler;
+            public Dictionary<string, Action<string, long, SendOption?>> signalHandlers = new();
+            public Dictionary<string, Action<string, long, object, SendOption?>> packetHandlerWrappers = new();
+            public Dictionary<(string, Delegate), Action<string, long, object, SendOption?>> packetHandlerCache = new();
         }
+
+        public static Func<object, byte[]> packetSerializer = (obj) => {
+            string json = JsonUtility.ToJson(obj);
+            return Encoding.UTF8.GetBytes(json);
+        };
+
+        public static Func<byte[], Type, object> packetDeserializer = (data, type) => {
+            string json = Encoding.UTF8.GetString(data);
+            return JsonUtility.FromJson(json, type);
+        };
 
         private Dictionary<string, HandlerGroup> _handlerMap = new();
 
@@ -98,6 +108,8 @@ namespace LiteP2PNet {
             }
         }
 
+        #region Signaling
+
         private void SetupSignaling() {
             _signaling.OnOpen += () => {
                 isConnectedToServer = true;
@@ -114,17 +126,15 @@ namespace LiteP2PNet {
             };
 
             _signaling.OnMessage += (bytes) => {
-                var message = System.Text.Encoding.UTF8.GetString(bytes);
+                var message = Encoding.UTF8.GetString(bytes);
                 var signalingMessage = JsonUtility.FromJson<SignalingMessage>(message);
                 _incomingMessageQueue.Enqueue(signalingMessage);
             };
         }
 
-        public IEnumerator ConnectServerAsync(string lobbyId, float timeout = 10f) {
-            _signaling = new WebSocket(_serverUrl, new Dictionary<string, string> {
-                { "user-id", _userId },
-                { "lobby-id", lobbyId }
-            });
+        public IEnumerator ConnectServerAsync(Dictionary<string, string> headers, string userIdKey = "user-id", float timeout = 10f) {
+            headers.Add(userIdKey, _userId);
+            _signaling = new WebSocket(_serverUrl, headers);
 
             _dataChannelListMap = new();
             _handlerMap = new();
@@ -155,6 +165,27 @@ namespace LiteP2PNet {
             _signaling = null;
         }
 
+        private void SendSignalingMessage(string type, string to, object data) {
+            if (!isConnectedToServer) return;
+            try {
+                string json = JsonUtility.ToJson(data);
+                var message = new SignalingMessage {
+                    type = type,
+                    from = _userId,
+                    to = to,
+                    body = json
+                };
+
+                _signaling.SendText(JsonUtility.ToJson(message));
+            }
+            catch (Exception ex) {
+                throw new Exception("Failed to send signaling message", ex);
+            }
+        }
+
+        #endregion
+
+        #region Peer Connection
         public IEnumerator ConnectPeerAsync(string peerId) {
             SetupPeerConnection(peerId);
 
@@ -181,6 +212,8 @@ namespace LiteP2PNet {
 
             _myIceCandidatesMap.Remove(peerId);
             _isDescriptionReadyMap.Remove(peerId);
+            _dataChannelListMap.Remove(peerId);
+            _handlerMap.Remove(peerId);
         }
 
         private void SetupPeerConnection(string peerId) {
@@ -249,15 +282,42 @@ namespace LiteP2PNet {
                     break;
             }
 
+            int offset = 1;
             switch (rawdata[0] >> 6) {
                 case (byte)DataType.Byte:
-                    handler.bytesHandler?.Invoke(peerId, rawdata[1..^0], option);
+                    handler.bytesHandler?.Invoke(peerId, rawdata[Utils.GetRemainingByteRange(offset)], option);
                     break;
-                case (byte)DataType.String:
-                    handler.stringHandler?.Invoke(peerId, Encoding.UTF8.GetString(rawdata[1..^0]), option);
+                case (byte)DataType.Signal: {
+                        byte[] timestampBytes = rawdata[Utils.GetByteRange(ref offset, sizeof(long))];
+                        long timestamp = BitConverter.ToInt64(timestampBytes, 0);
+                        if (handler.signalHandlers.TryGetValue(Encoding.UTF8.GetString(rawdata[Utils.GetRemainingByteRange(offset)]), out var signalHandler))
+                            signalHandler?.Invoke(peerId, timestamp, option);
+                        break;
+                    }
+                case (byte)DataType.Packet: {
+                        byte[] timestampBytes = rawdata[Utils.GetByteRange(ref offset, sizeof(long))];
+                        long timestamp = BitConverter.ToInt64(timestampBytes, 0);
+
+                        byte[] packetIdLenBytes = rawdata[Utils.GetByteRange(ref offset, sizeof(int))];
+                        int packetIdLen = BitConverter.ToInt32(packetIdLenBytes, 0);
+                        string packetId = Encoding.UTF8.GetString(rawdata[Utils.GetByteRange(ref offset, packetIdLen)]);
+                        Type packetType = PacketRegistry.GetPacketType(packetId);
+                        if (packetType == null) {
+                            throw new Exception($"Received unknown packet ID: {packetId}");
+                        }
+
+                        byte[] packetData = rawdata[Utils.GetRemainingByteRange(offset)];
+
+                        var data = packetDeserializer(packetData, packetType);
+
+                        if (handler.packetHandlerWrappers.TryGetValue(packetId, out var packetHandlerWrapper)) {
+                            packetHandlerWrapper?.Invoke(peerId, timestamp, data, option);
+                        }
+                    }
                     break;
             }
         }
+
         private IEnumerator HandleSignalingMessage(SignalingMessage message) {
             switch (message.type) {
                 case "offer":
@@ -336,11 +396,9 @@ namespace LiteP2PNet {
             _isDescriptionReadyMap[message.from] = true;
         }
 
-        private void HandleIceCandidate(SignalingMessage message)
-        {
+        private void HandleIceCandidate(SignalingMessage message) {
             var candidateData = JsonUtility.FromJson<IceCandidateData>(message.body);
-            var candidate = new RTCIceCandidate(new RTCIceCandidateInit
-            {
+            var candidate = new RTCIceCandidate(new RTCIceCandidateInit {
                 candidate = candidateData.candidate,
                 sdpMid = candidateData.sdpMid,
                 sdpMLineIndex = candidateData.sdpMLineIndex.ToNullable()
@@ -349,35 +407,21 @@ namespace LiteP2PNet {
             if (_isDescriptionReadyMap.ContainsKey(message.from) && _isDescriptionReadyMap[message.from]) {
                 _peerConnectionMap[message.from].AddIceCandidate(candidate);
                 Debug.Log($"Added Remote ICE Candidate: {candidate.Candidate}");
-            } else {
+            }
+            else {
                 Debug.Log($"Queued Remote ICE Candidate: {candidate.Candidate}");
             }
-            
+
             if (_remoteIceCandidatesMap.ContainsKey(message.from)) {
                 _remoteIceCandidatesMap[message.from].Add(candidate);
-            } else {
+            }
+            else {
                 _remoteIceCandidatesMap.Add(message.from, new() { candidate });
             }
         }
+        #endregion
 
-        private void SendSignalingMessage(string type, string to, object data) {
-            if (!isConnectedToServer) return;
-            try {
-                string json = JsonUtility.ToJson(data);
-                var message = new SignalingMessage {
-                    type = type,
-                    from = _userId,
-                    to = to,
-                    body = json
-                };
-
-                _signaling.SendText(JsonUtility.ToJson(message));
-            }
-            catch (Exception ex) {
-                throw new Exception("Failed to send signaling message", ex);
-            }
-        }
-
+    #region Send
         private bool SendData(string peerId, byte[] data, SendOption option) {
             if (!_dataChannelListMap.TryGetValue(peerId, out var channels)) return false;
 
@@ -397,20 +441,115 @@ namespace LiteP2PNet {
             return SendData(peerId, _data.ToArray(), option);
         }
 
-        public bool SendString(string peerId, string data, SendOption option) {
+        public bool SendSignal(string peerId, string signalName, SendOption option) {
             byte prefix = 0;
-            prefix &= (byte)DataType.String << 6;
+            prefix &= (byte)DataType.Signal << 6;
             prefix &= (byte)((byte)option << 4);
 
-            byte[] rawdata = Encoding.UTF8.GetBytes(data);
+            byte[] rawdata = Encoding.UTF8.GetBytes(signalName);
+
+            byte[] timestamp = BitConverter.GetBytes(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
 
             List<byte> _data = new() { prefix };
 
+            _data.AddRange(timestamp);
             _data.AddRange(rawdata);
 
             return SendData(peerId, _data.ToArray(), option);
         }
 
+        public bool SendPacket<T>(string peerId, T packet, SendOption option) {
+            byte prefix = 0;
+            prefix &= (byte)DataType.Packet << 6;
+            prefix &= (byte)((byte)option << 4);
+
+            string json = JsonUtility.ToJson(packet);
+            byte[] rawdata = packetSerializer(packet);
+
+            byte[] timestamp = BitConverter.GetBytes(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+            string packetId = PacketRegistry.GetPacketId(typeof(T));
+            if (packetId == null) throw new Exception($"Type {typeof(T).FullName} is not a packet. Make sure it is decorated with [Packet] attribute.");
+            byte[] packetIdLen = BitConverter.GetBytes(packetId.Length);
+
+            List<byte> _data = new() { prefix };
+
+            _data.AddRange(timestamp);
+            _data.AddRange(packetIdLen);
+            _data.AddRange(Encoding.UTF8.GetBytes(packetId));
+            _data.AddRange(rawdata);
+
+            return SendData(peerId, _data.ToArray(), option);
+        }
+        #endregion
+
+        #region Handler
+
+        public void RegisterBytesHandler(string peerId, Action<string, byte[], SendOption?> handler) {
+            if (!_handlerMap.ContainsKey(peerId)) {
+                _handlerMap[peerId] = new();
+            }
+
+            _handlerMap[peerId].bytesHandler += handler;
+        }
+
+        public bool UnregisterBytesHandler(string peerId, Action<string, byte[], SendOption?> handler) {
+            if (_handlerMap.TryGetValue(peerId, out var group)) {
+                group.bytesHandler -= handler;
+                return true;
+            }
+            return false;
+        }
+
+        public void RegisterSignalHandler(string peerId, string signalName, Action<string, long, SendOption?> handler) {
+            if (!_handlerMap.ContainsKey(peerId)) {
+                _handlerMap[peerId] = new();
+            }
+
+            _handlerMap[peerId].signalHandlers[signalName] += handler;
+        }
+
+        public bool UnregisterSignalHandler(string peerId, string signalName, Action<string, long, SendOption?> handler) {
+            if (_handlerMap.TryGetValue(peerId, out var group)) {
+                group.signalHandlers[signalName] -= handler;
+                return true;
+            }
+            return false;
+        }
+
+        public void RegisterPacketHandler<T>(string peerId, Action<string, long, T, SendOption?> handler) {
+            if (!_handlerMap.ContainsKey(peerId)) {
+                _handlerMap[peerId] = new();
+            }
+
+            var group = _handlerMap[peerId];
+            string packetId = PacketRegistry.GetPacketId(typeof(T));
+            if (packetId == null) throw new Exception($"Type {typeof(T).FullName} is not a packet. Make sure it is decorated with [Packet] attribute.");
+
+            Action<string, long, object, SendOption?> wrapper = (string pId, long timestamp, object packet, SendOption? option) => {
+                handler(pId, timestamp, (T)packet, option);
+            };
+
+            group.packetHandlerCache[(packetId, handler)] = wrapper;
+
+            group.packetHandlerWrappers[packetId] += wrapper;
+        }
+
+        public bool UnregisterPacketHandler<T>(string peerId, Action<string, long, T, SendOption?> handler) {
+            if (_handlerMap.TryGetValue(peerId, out var group)) {
+                string packetId = PacketRegistry.GetPacketId(typeof(T));
+                if (packetId == null) throw new Exception($"Type {typeof(T).FullName} is not a packet. Make sure it is decorated with [Packet] attribute.");
+
+                if (group.packetHandlerCache.TryGetValue((packetId, handler), out var wrapper)) {
+                    group.packetHandlerWrappers[packetId] -= wrapper;
+                    group.packetHandlerCache.Remove((packetId, handler));
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        #endregion
 
         void Update() {
             #if !UNITY_WEBGL || UNITY_EDITOR

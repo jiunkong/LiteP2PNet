@@ -14,7 +14,7 @@ namespace LiteP2PNet {
 
     internal enum DataType : byte {
         Byte = 0b00,
-        String = 0b01,
+        Signal = 0b01,
         Packet = 0b10,
         RPC = 0b11,
     }
