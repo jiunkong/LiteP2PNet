@@ -3,6 +3,11 @@
   "rootNamespace": "LiteP2PNet",
   "autoReferenced": true,
   "overrideReferences": false,
+  "references": [
+    "Unity.WebRTC",
+    "NativeWebSocket",
+    "MessagePack.Unity"
+  ],
   "precompiledReferences": [
     "MessagePack/MessagePack.dll",
     "MessagePack/MessagePack.Annotations.dll",
