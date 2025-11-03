@@ -5,7 +5,7 @@
   "overrideReferences": false,
   "references": [
     "Unity.WebRTC",
-    "NativeWebSocket",
+    "endel.nativewebsocket",
     "MessagePack.Unity"
   ],
   "precompiledReferences": [
