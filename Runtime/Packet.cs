@@ -1,10 +1,31 @@
 using System;
 using System.Linq;
 using System.Reflection;
+using System.Text;
+using UnityEngine;
 
 namespace LiteP2PNet {
     public static class PacketRegistry {
         private static readonly PairMap<string, Type> _packetTypes = new();
+
+        internal static readonly Func<object, Type, byte[]> jsonPacketSerializer = (obj, _) => {
+            string json = JsonUtility.ToJson(obj);
+            return Encoding.UTF8.GetBytes(json);
+        };
+
+        internal static readonly Func<byte[], Type, object> jsonPacketDeserializer = (bytes, type) => {
+            string json = Encoding.UTF8.GetString(bytes);
+            return JsonUtility.FromJson(json, type);
+        };
+
+        internal static readonly Func<object, Type, byte[]> msgpackPacketSerializer = (obj, type) => {
+            byte[] bytes = MessagePack.MessagePackSerializer.Serialize(type, obj);
+            return bytes;
+        };
+        
+        internal static readonly Func<byte[], Type, object> msgpackPacketDeserializer = (bytes, type) => {
+            return MessagePack.MessagePackSerializer.Deserialize(type, bytes);
+        };
 
         static PacketRegistry() {
             var types = AppDomain.CurrentDomain.GetAssemblies().SelectMany(asm => asm.GetTypes()).Where(t => t.IsDefined(typeof(Packet)));

@@ -2,15 +2,15 @@
   "name": "dev.jiunkong.litep2pnet",
   "rootNamespace": "LiteP2PNet",
   "autoReferenced": true,
-  "overrideReferences": false,
+  "overrideReferences": true,
   "references": [
     "Unity.WebRTC",
     "endel.nativewebsocket",
     "MessagePack.Unity"
   ],
   "precompiledReferences": [
-    "MessagePack/MessagePack.dll",
-    "MessagePack/MessagePack.Annotations.dll",
-    "MessagePack/System.Runtime.CompilerServices.Unsafe.dll"
+    "MessagePack.dll",
+    "MessagePack.Annotations.dll",
+    "System.Runtime.CompilerServices.Unsafe.dll"
   ]
 }

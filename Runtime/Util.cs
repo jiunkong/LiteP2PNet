@@ -1,8 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace LiteP2PNet {
-    public static class Utils {
+    internal static class Utils {
         public static Range GetByteRange(ref int offset, int size) {
             var range = offset..(offset + size);
             offset += size;
@@ -12,10 +13,12 @@ namespace LiteP2PNet {
         public static Range GetRemainingByteRange(int offset) {
             return offset..^0;
         }
+
+        public static string GetArgumentsTypeString(List<Type> types) => $"({string.Join(", ", types.Select(t => t.Name))})";
     }
      
 
-    public class PairMap<T1, T2> {
+    internal class PairMap<T1, T2> {
     private readonly Dictionary<T1, T2> _map1 = new();
     private readonly Dictionary<T2, T1> _map2 = new();
     private readonly object _lock = new();

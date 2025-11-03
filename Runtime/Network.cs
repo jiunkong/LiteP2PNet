@@ -8,19 +8,20 @@ using System.Text;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using MessagePack;
+using System.Linq;
 
 namespace LiteP2PNet {
-    public class P2PClient : MonoBehaviour {
-        private static P2PClient _instance;
-        public static P2PClient Instance {
+    public class Network : MonoBehaviour {
+        private static Network _instance;
+        public static Network Instance {
             get {
                 if (_instance != null) return _instance;
 
-                _instance = FindAnyObjectByType<P2PClient>();
+                _instance = FindAnyObjectByType<Network>();
                 if (_instance != null) return _instance;
 
                 var obj = new GameObject("P2PClient (Singleton)");
-                _instance = obj.AddComponent<P2PClient>();
+                _instance = obj.AddComponent<Network>();
                 DontDestroyOnLoad(obj);
                 return _instance;
             }
@@ -51,18 +52,28 @@ namespace LiteP2PNet {
             public Dictionary<(string, Delegate), Action<string, long, object, SendOption?>> packetHandlerCache = new();
         }
 
-        public static Func<object, byte[]> packetSerializer = (obj) => {
-            string json = JsonUtility.ToJson(obj);
-            return Encoding.UTF8.GetBytes(json);
-        };
+        private static Func<object, Type, byte[]> packetSerializer = PacketRegistry.jsonPacketSerializer;
 
-        public static Func<byte[], Type, object> packetDeserializer = (data, type) => {
-            
-            string json = Encoding.UTF8.GetString(data);
-            return JsonUtility.FromJson(json, type);
-        };
+        public static Func<byte[], Type, object> packetDeserializer = PacketRegistry.jsonPacketDeserializer;
 
         private Dictionary<string, HandlerGroup> _handlerMap = new();
+
+        #region Packet Serialization
+        public void UseJsonUtilityPacketSerialization() {
+            packetSerializer = PacketRegistry.jsonPacketSerializer;
+            packetDeserializer = PacketRegistry.jsonPacketDeserializer;
+        }
+
+        public void UseMessagePackPacketSerialization() {
+            packetSerializer = PacketRegistry.msgpackPacketSerializer;
+            packetDeserializer = PacketRegistry.msgpackPacketDeserializer;
+        }
+
+        public void UseCustomPacketSerialization(Func<object, Type, byte[]> serializer, Func<byte[], Type, object> deserializer) {
+            packetSerializer = serializer;
+            packetDeserializer = deserializer;
+        }
+        #endregion
 
         void Awake() {
             if (_instance != null && _instance != this)
@@ -324,6 +335,56 @@ namespace LiteP2PNet {
                         }
                     }
                     break;
+                case (byte)DataType.RPC: {
+                        RpcType rpcType = (RpcType)(rawdata[0] & (0 | 0b1111));
+
+                        if (rpcType == RpcType.Call) {
+                            byte[] methodIdLenBytes = rawdata[Utils.GetByteRange(ref offset, sizeof(int))];
+                            int methodIdLen = BitConverter.ToInt32(methodIdLenBytes, 0);
+                            string methodId = Encoding.UTF8.GetString(rawdata[Utils.GetByteRange(ref offset, methodIdLen)]);
+
+                            var methodInfo = RpcRegistry.GetRpcMethod(methodId);
+                            if (methodInfo == null) {
+                                throw new Exception($"Received unknown packet ID: {methodId}");
+                            }
+
+                            List<object> args = new();
+                            List<Type> types = new();
+                            var methodArgTypes = methodInfo.GetParameters().Select(p => p.GetType()).ToList();
+
+                            while (offset < rawdata.Length) {
+                                byte[] typeLenBytes = rawdata[Utils.GetByteRange(ref offset, sizeof(int))];
+                                int typeLen = BitConverter.ToInt32(typeLenBytes, 0);
+                                byte[] typeBytes = rawdata[Utils.GetByteRange(ref offset, typeLen)];
+                                Type argType = MessagePackSerializer.Deserialize<Type>(typeBytes);
+
+                                byte[] argLenBytes = rawdata[Utils.GetByteRange(ref offset, sizeof(int))];
+                                int argLen = BitConverter.ToInt32(argLenBytes, 0);
+                                byte[] argBytes = rawdata[Utils.GetByteRange(ref offset, argLen)];
+
+                                types.Add(argType);
+                                args.Add(MessagePackSerializer.Deserialize(argType, argBytes));
+                            }
+
+                            bool fail = false;
+                            if (types.Count != methodArgTypes.Count) {
+                                fail = true;
+                            } else {
+                                for (int i = 0; i < types.Count; i++) {
+                                    if (types[i] != methodArgTypes[i]) {
+                                        fail = true;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (fail) throw new ArgumentException($"RpcMethod {methodInfo.DeclaringType.FullName}.{methodInfo.Name} cannot be called with the arguments {Utils.GetArgumentsTypeString(types)}. Expected {Utils.GetArgumentsTypeString(methodArgTypes)}");
+
+                            // if (types.Count == 0) methodInfo.Invoke(null);
+                            // else methodInfo.Invoke(args);
+                        }
+                    }
+                    break;
             }
         }
 
@@ -430,7 +491,7 @@ namespace LiteP2PNet {
         }
         #endregion
 
-    #region Send
+        #region Send
         private bool SendData(string peerId, byte[] data, SendOption option) {
             if (!_dataChannelListMap.TryGetValue(peerId, out var channels)) return false;
 
@@ -472,20 +533,20 @@ namespace LiteP2PNet {
             prefix &= (byte)DataType.Packet << 6;
             prefix &= (byte)((byte)option << 4);
 
-            string json = JsonUtility.ToJson(packet);
-            byte[] rawdata = packetSerializer(packet);
+            byte[] rawdata = packetSerializer(packet, typeof(T));
 
             byte[] timestamp = BitConverter.GetBytes(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
 
             string packetId = PacketRegistry.GetPacketId(typeof(T));
             if (packetId == null) throw new Exception($"Type {typeof(T).FullName} is not a packet. Make sure it is decorated with [Packet] attribute.");
-            byte[] packetIdLen = BitConverter.GetBytes(packetId.Length);
+            var packetIdBytes = Encoding.UTF8.GetBytes(packetId);
+            byte[] packetIdBytesLen = BitConverter.GetBytes(packetIdBytes.Length);
 
             List<byte> _data = new() { prefix };
 
             _data.AddRange(timestamp);
-            _data.AddRange(packetIdLen);
-            _data.AddRange(Encoding.UTF8.GetBytes(packetId));
+            _data.AddRange(packetIdBytesLen);
+            _data.AddRange(packetIdBytes);
             _data.AddRange(rawdata);
 
             return SendData(peerId, _data.ToArray(), option);
@@ -560,9 +621,11 @@ namespace LiteP2PNet {
 
         #endregion
 
-    #region RPC
+        #region RPC
 
-        public void CallRpcMethod(string peerId, string methodId, SendOption option, params object[] args) {
+        
+
+        public bool CallRpcMethod(string peerId, string methodId, SendOption option, params object[] args) {
             byte prefix = 0;
             prefix &= (byte)DataType.RPC << 6;
             prefix &= (byte)((byte)option << 4);
@@ -570,10 +633,30 @@ namespace LiteP2PNet {
 
             if (RpcRegistry.GetRpcMethod(methodId) == null) throw new Exception($"Method '{methodId}' is not a rpc method. Make sure it is decorated with [RpcMethod] attribute.");
 
+            List<byte> _data = new() { prefix };
 
+            byte[] methodIdBytes = Encoding.UTF8.GetBytes(methodId);
+            byte[] methodIdBytesLen = BitConverter.GetBytes(methodIdBytes.Length);
+            _data.AddRange(methodIdBytesLen);
+            _data.AddRange(methodIdBytes);
+
+            foreach (var arg in args) {
+                var type = arg.GetType();
+                var serializedType = MessagePackSerializer.Serialize(type);
+                var serializedTypeSize = BitConverter.GetBytes(serializedType.Length);
+                _data.AddRange(serializedTypeSize);
+                _data.AddRange(serializedType);
+
+                var serializedArg = MessagePackSerializer.Serialize(type, arg);
+                var serializedArgSize = BitConverter.GetBytes(serializedArg.Length);
+                _data.AddRange(serializedArgSize);
+                _data.AddRange(serializedArg);
+            }
+
+            return SendData(peerId, _data.ToArray(), option);
         }
 
-    #endregion
+        #endregion
 
         void Update() {
             #if !UNITY_WEBGL || UNITY_EDITOR
