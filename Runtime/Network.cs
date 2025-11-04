@@ -12,6 +12,8 @@ using System.Linq;
 
 namespace LiteP2PNet {
     public class Network : MonoBehaviour {
+        public static bool useAssemblyQualifiedNameForTypes = false;
+
         private static Network _instance;
         public static Network Instance {
             get {
@@ -54,22 +56,27 @@ namespace LiteP2PNet {
 
         private static Func<object, Type, byte[]> packetSerializer = PacketRegistry.jsonPacketSerializer;
 
-        public static Func<byte[], Type, object> packetDeserializer = PacketRegistry.jsonPacketDeserializer;
+        private static Func<byte[], Type, object> packetDeserializer = PacketRegistry.jsonPacketDeserializer;
 
         private Dictionary<string, HandlerGroup> _handlerMap = new();
 
+        private NetworkIdRegistry networkIdRegistry;
+
+        public NetworkId AllocateNetworkId(RpcBehaviour rpcBehaviour) => networkIdRegistry.AllocateNetworkId(rpcBehaviour);
+        public void ReleaseNetworkId(NetworkId networkId) => networkIdRegistry.ReleaseNetworkId(networkId);
+
         #region Packet Serialization
-        public void UseJsonUtilityPacketSerialization() {
+        public void UseJsonUtilityPacketSerializer() {
             packetSerializer = PacketRegistry.jsonPacketSerializer;
             packetDeserializer = PacketRegistry.jsonPacketDeserializer;
         }
 
-        public void UseMessagePackPacketSerialization() {
+        public void UseMessagePackPacketSerializer() {
             packetSerializer = PacketRegistry.msgpackPacketSerializer;
             packetDeserializer = PacketRegistry.msgpackPacketDeserializer;
         }
 
-        public void UseCustomPacketSerialization(Func<object, Type, byte[]> serializer, Func<byte[], Type, object> deserializer) {
+        public void UseCustomPacketSerializer(Func<object, Type, byte[]> serializer, Func<byte[], Type, object> deserializer) {
             packetSerializer = serializer;
             packetDeserializer = deserializer;
         }
@@ -163,6 +170,8 @@ namespace LiteP2PNet {
             _myIceCandidatesMap = new();
             _remoteIceCandidatesMap = new();
             _incomingMessageQueue = new();
+
+            networkIdRegistry = new NetworkIdRegistry(_userId);
 
             SetupSignaling();
 
@@ -304,87 +313,38 @@ namespace LiteP2PNet {
 
             int offset = 1;
             switch (rawdata[0] >> 6) {
-                case (byte)DataType.Byte:
-                    handler.bytesHandler?.Invoke(peerId, rawdata[Utils.GetRemainingByteRange(offset)], option);
+            case (byte)DataType.Byte:
+                handler.bytesHandler?.Invoke(peerId, rawdata[Utils.GetRemainingByteRange(offset)], option);
+                break;
+            case (byte)DataType.Signal: {
+                    byte[] timestampBytes = rawdata[Utils.GetByteRange(ref offset, sizeof(long))];
+                    long timestamp = BitConverter.ToInt64(timestampBytes, 0);
+                    if (handler.signalHandlers.TryGetValue(Encoding.UTF8.GetString(rawdata[Utils.GetRemainingByteRange(offset)]), out var signalHandler))
+                        signalHandler?.Invoke(peerId, timestamp, option);
                     break;
-                case (byte)DataType.Signal: {
-                        byte[] timestampBytes = rawdata[Utils.GetByteRange(ref offset, sizeof(long))];
-                        long timestamp = BitConverter.ToInt64(timestampBytes, 0);
-                        if (handler.signalHandlers.TryGetValue(Encoding.UTF8.GetString(rawdata[Utils.GetRemainingByteRange(offset)]), out var signalHandler))
-                            signalHandler?.Invoke(peerId, timestamp, option);
-                        break;
+                }
+            case (byte)DataType.Packet: {
+                    byte[] timestampBytes = rawdata[Utils.GetByteRange(ref offset, sizeof(long))];
+                    long timestamp = BitConverter.ToInt64(timestampBytes, 0);
+
+                    string packetId = Utils.ParseData<string>(ref offset, rawdata);
+                    Type packetType = PacketRegistry.GetPacketType(packetId);
+                    if (packetType == null) {
+                        throw new RpcUnknownIdException($"Received unknown packet ID: {packetId}");
                     }
-                case (byte)DataType.Packet: {
-                        byte[] timestampBytes = rawdata[Utils.GetByteRange(ref offset, sizeof(long))];
-                        long timestamp = BitConverter.ToInt64(timestampBytes, 0);
 
-                        byte[] packetIdLenBytes = rawdata[Utils.GetByteRange(ref offset, sizeof(int))];
-                        int packetIdLen = BitConverter.ToInt32(packetIdLenBytes, 0);
-                        string packetId = Encoding.UTF8.GetString(rawdata[Utils.GetByteRange(ref offset, packetIdLen)]);
-                        Type packetType = PacketRegistry.GetPacketType(packetId);
-                        if (packetType == null) {
-                            throw new Exception($"Received unknown packet ID: {packetId}");
-                        }
+                    byte[] packetData = rawdata[Utils.GetRemainingByteRange(offset)];
 
-                        byte[] packetData = rawdata[Utils.GetRemainingByteRange(offset)];
+                    var data = packetDeserializer(packetData, packetType);
 
-                        var data = packetDeserializer(packetData, packetType);
-
-                        if (handler.packetHandlerWrappers.TryGetValue(packetId, out var packetHandlerWrapper)) {
-                            packetHandlerWrapper?.Invoke(peerId, timestamp, data, option);
-                        }
+                    if (handler.packetHandlerWrappers.TryGetValue(packetId, out var packetHandlerWrapper)) {
+                        packetHandlerWrapper?.Invoke(peerId, timestamp, data, option);
                     }
-                    break;
-                case (byte)DataType.RPC: {
-                        RpcType rpcType = (RpcType)(rawdata[0] & (0 | 0b1111));
-
-                        if (rpcType == RpcType.Call) {
-                            byte[] methodIdLenBytes = rawdata[Utils.GetByteRange(ref offset, sizeof(int))];
-                            int methodIdLen = BitConverter.ToInt32(methodIdLenBytes, 0);
-                            string methodId = Encoding.UTF8.GetString(rawdata[Utils.GetByteRange(ref offset, methodIdLen)]);
-
-                            var methodInfo = RpcRegistry.GetRpcMethod(methodId);
-                            if (methodInfo == null) {
-                                throw new Exception($"Received unknown packet ID: {methodId}");
-                            }
-
-                            List<object> args = new();
-                            List<Type> types = new();
-                            var methodArgTypes = methodInfo.GetParameters().Select(p => p.GetType()).ToList();
-
-                            while (offset < rawdata.Length) {
-                                byte[] typeLenBytes = rawdata[Utils.GetByteRange(ref offset, sizeof(int))];
-                                int typeLen = BitConverter.ToInt32(typeLenBytes, 0);
-                                byte[] typeBytes = rawdata[Utils.GetByteRange(ref offset, typeLen)];
-                                Type argType = MessagePackSerializer.Deserialize<Type>(typeBytes);
-
-                                byte[] argLenBytes = rawdata[Utils.GetByteRange(ref offset, sizeof(int))];
-                                int argLen = BitConverter.ToInt32(argLenBytes, 0);
-                                byte[] argBytes = rawdata[Utils.GetByteRange(ref offset, argLen)];
-
-                                types.Add(argType);
-                                args.Add(MessagePackSerializer.Deserialize(argType, argBytes));
-                            }
-
-                            bool fail = false;
-                            if (types.Count != methodArgTypes.Count) {
-                                fail = true;
-                            } else {
-                                for (int i = 0; i < types.Count; i++) {
-                                    if (types[i] != methodArgTypes[i]) {
-                                        fail = true;
-                                        break;
-                                    }
-                                }
-                            }
-
-                            if (fail) throw new ArgumentException($"RpcMethod {methodInfo.DeclaringType.FullName}.{methodInfo.Name} cannot be called with the arguments {Utils.GetArgumentsTypeString(types)}. Expected {Utils.GetArgumentsTypeString(methodArgTypes)}");
-
-                            // if (types.Count == 0) methodInfo.Invoke(null);
-                            // else methodInfo.Invoke(args);
-                        }
-                    }
-                    break;
+                }
+                break;
+            case (byte)DataType.RPC:
+                HandleRpc(peerId, ref offset, rawdata, option);
+                break;
             }
         }
 
@@ -539,14 +499,11 @@ namespace LiteP2PNet {
 
             string packetId = PacketRegistry.GetPacketId(typeof(T));
             if (packetId == null) throw new Exception($"Type {typeof(T).FullName} is not a packet. Make sure it is decorated with [Packet] attribute.");
-            var packetIdBytes = Encoding.UTF8.GetBytes(packetId);
-            byte[] packetIdBytesLen = BitConverter.GetBytes(packetIdBytes.Length);
 
             List<byte> _data = new() { prefix };
 
             _data.AddRange(timestamp);
-            _data.AddRange(packetIdBytesLen);
-            _data.AddRange(packetIdBytes);
+            Utils.AppendData(ref _data, packet);
             _data.AddRange(rawdata);
 
             return SendData(peerId, _data.ToArray(), option);
@@ -623,38 +580,342 @@ namespace LiteP2PNet {
 
         #region RPC
 
-        
+        private bool SendRpcResult(string peerId, uint requestId, Type returnType, object result, SendOption option) {
+            byte prefix = 0;
+            prefix &= (byte)DataType.RPC << 6;
+            prefix &= (byte)((byte)option << 4);
+            prefix &= (byte)RpcType.Return;
 
-        public bool CallRpcMethod(string peerId, string methodId, SendOption option, params object[] args) {
+            List<byte> _data = new() { prefix };
+
+            Utils.AppendData(ref _data, requestId);
+
+            TypeWrapper typeWrapper = new(returnType);
+            Utils.AppendData(ref _data, typeWrapper);
+
+            if (returnType != typeof(void)) Utils.AppendData(returnType, ref _data, result);
+
+            return SendData(peerId, _data.ToArray(), option);
+        }
+
+        private void HandleRpc(string peerId, ref int offset, byte[] rawdata, SendOption? option) {
+            RpcType rpcType = (RpcType)(rawdata[0] & (0 | 0b1111));
+
+            if (rpcType == RpcType.Call) {
+                var requestId = Utils.ParseData<uint>(ref offset, rawdata);
+
+                NetworkId? networkId;
+                if (Utils.CheckEmptySequence(ref offset, rawdata)) networkId = null;
+                else networkId = Utils.ParseData<NetworkId>(ref offset, rawdata);
+
+                string methodId = Utils.ParseData<string>(ref offset, rawdata);
+
+                var methodInfo = RpcRegistry.GetRpcMethod(methodId);
+                if (methodInfo == null) {
+                    throw new RpcUnknownIdException($"Received unknown method ID: {methodId}");
+                }
+
+                List<object> args = new();
+                List<Type> types = new();
+                var methodArgTypes = methodInfo.GetParameters().Select(p => p.GetType()).ToList();
+
+                while (offset < rawdata.Length) {
+                    TypeWrapper argTypeWrapper = Utils.ParseData<TypeWrapper>(ref offset, rawdata);
+                    Type argType = argTypeWrapper.Type;
+
+                    if (argType == null) {
+                        throw new RpcUnknownTypeException($"Procedure call with unknown type: {argTypeWrapper.TypeName}");
+                    }
+
+                    object arg = Utils.ParseData(argType, ref offset, rawdata);
+
+                    types.Add(argType);
+                    args.Add(arg);
+                }
+
+                bool fail = false;
+                if (types.Count != methodArgTypes.Count) {
+                    fail = true;
+                }
+                else {
+                    for (int i = 0; i < types.Count; i++) {
+                        if (types[i] != methodArgTypes[i]) {
+                            fail = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (fail) throw new RpcArgumentException($"RpcMethod {methodInfo.DeclaringType.FullName}.{methodInfo.Name} cannot be called with the arguments {Utils.GetArgumentsTypeString(types)}. Expected {Utils.GetArgumentsTypeString(methodArgTypes)}");
+
+                object result;
+                if (methodInfo.IsStatic) {
+                    result = methodInfo.Invoke(null, args.ToArray());
+                }
+                else {
+                    if (!networkId.HasValue) throw new RpcUnknownIdException($"RpcMethod {methodInfo.DeclaringType.FullName}.{methodInfo.Name} is not a static method.");
+                    var obj = networkIdRegistry.FindRpcBehaviour(networkId.Value);
+                    if (obj == null) throw new RpcUnknownIdException($"Cannot find RpcBehaviour with NetworkId '{networkId}'");
+                    result = methodInfo.Invoke(obj, args.ToArray());
+                }
+                SendRpcResult(peerId, requestId, methodInfo.ReturnType, result, option ?? SendOption.OrderedReliable);
+            }
+            else if (rpcType == RpcType.Return) {
+                var requestId = Utils.ParseData<uint>(ref offset, rawdata);
+
+                var typewrapper = Utils.ParseData<TypeWrapper>(ref offset, rawdata);
+                var type = typewrapper.Type;
+
+                object result = null; 
+                if (type != typeof(void)) result = Utils.ParseData(type, ref offset, rawdata);
+                networkIdRegistry.RunCallback(requestId, result);
+                networkIdRegistry.ReleaseRequestId(requestId);
+            }
+            else if (rpcType == RpcType.Get) {
+                var requestId = Utils.ParseData<uint>(ref offset, rawdata);
+
+                NetworkId? networkId;
+                if (Utils.CheckEmptySequence(ref offset, rawdata)) networkId = null;
+                else networkId = Utils.ParseData<NetworkId>(ref offset, rawdata);
+
+                string propertyId = Utils.ParseData<string>(ref offset, rawdata);
+
+                var propertyInfo = RpcRegistry.GetRpcProperty(propertyId);
+                if (propertyInfo == null) {
+                    throw new RpcUnknownIdException($"Received unknown property ID: {propertyId}");
+                }
+
+                object result;
+                if (propertyInfo.GetMethod?.IsStatic == true) result = propertyInfo.GetValue(null);
+                else {
+                    var obj = networkIdRegistry.FindRpcBehaviour(networkId.Value);
+                    if (obj == null) throw new RpcUnknownIdException($"Cannot find RpcBehaviour with NetworkId '{networkId}'");
+                    result = propertyInfo.GetValue(obj);
+                }
+                
+                SendRpcResult(peerId, requestId, propertyInfo.PropertyType, result, option ?? SendOption.OrderedReliable);
+            }
+            else if (rpcType == RpcType.Set) {
+                var requestId = Utils.ParseData<uint>(ref offset, rawdata);
+
+                NetworkId? networkId;
+                if (Utils.CheckEmptySequence(ref offset, rawdata)) networkId = null;
+                else networkId = Utils.ParseData<NetworkId>(ref offset, rawdata);
+
+                string propertyId = Utils.ParseData<string>(ref offset, rawdata);
+
+                var propertyInfo = RpcRegistry.GetRpcProperty(propertyId);
+                if (propertyInfo == null) {
+                    throw new RpcUnknownIdException($"Received unknown property ID: {propertyId}");
+                }
+
+                TypeWrapper typeWrapper = Utils.ParseData<TypeWrapper>(ref offset, rawdata);
+                Type type = typeWrapper.Type;
+                object value = Utils.ParseData(type, ref offset, rawdata);
+
+                if (propertyInfo.SetMethod?.IsStatic == true) propertyInfo.SetValue(null, value);
+                else {
+                    var obj = networkIdRegistry.FindRpcBehaviour(networkId.Value);
+                    if (obj == null) throw new RpcUnknownIdException($"Cannot find RpcBehaviour with NetworkId '{networkId}'");
+                    propertyInfo.SetValue(obj, value);
+                }
+                
+                SendRpcResult(peerId, requestId, typeof(void), null, option ?? SendOption.OrderedReliable);
+            }
+            else if (rpcType == RpcType.Instanciate) {
+
+            }
+            else if (rpcType == RpcType.Destroy) {
+
+            }
+            else if (rpcType == RpcType.Error) {
+
+            }
+        }
+
+        #region RPC Call Method
+        public bool CallRpcStaticMethod<T>(string peerId, SendOption option, RpcCall rpcCall, Action<T> callback)
+            => CallRpcMethod(peerId, networkId: null, option, rpcCall, callback);
+        public async Task<T> CallRpcStaticMethodAsync<T>(string peerId, SendOption option, RpcCall rpcCall)
+            => await CallRpcMethodAsync<T>(peerId, networkId: null, option, rpcCall);
+        public IEnumerator CallRpcStaticMethod<T>(string peerId, SendOption option, RpcCall rpcCall) {
+            yield return CallRpcMethod<T>(peerId, networkId: null, option, rpcCall);
+        }
+
+        public IEnumerator CallRpcMethod<T>(string peerId, RpcBehaviour rpcBehaviour, SendOption option, RpcCall rpcCall) {
+            yield return CallRpcMethod<T>(peerId, rpcBehaviour.networkId, option, rpcCall);
+        }
+        public IEnumerator CallRpcMethod<T>(string peerId, NetworkId? networkId, SendOption option, RpcCall rpcCall) {
+            T result;
+            bool done = false;
+            CallRpcMethod(peerId, networkId, option, rpcCall, (T obj) => {
+                result = obj;
+                done = true;
+            });
+            yield return new WaitUntil(() => done);
+        }
+
+        public async Task<T> CallRpcMethodAsync<T>(string peerId, RpcBehaviour rpcBehaviour, SendOption option, RpcCall rpcCall) {
+            var tcs = new TaskCompletionSource<T>();
+            CallRpcMethod(peerId, rpcBehaviour, option, rpcCall, (T obj) => tcs.SetResult(obj));
+            return await tcs.Task;
+        }
+        public async Task<T> CallRpcMethodAsync<T>(string peerId, NetworkId? networkId, SendOption option, RpcCall rpcCall) {
+            var tcs = new TaskCompletionSource<T>();
+            CallRpcMethod(peerId, networkId, option, rpcCall, (T obj) => tcs.SetResult(obj));
+            return await tcs.Task;
+        }
+
+        public bool CallRpcMethod<T>(string peerId, RpcBehaviour rpcBehaviour, SendOption option, RpcCall rpcCall, Action<T> callback)
+            => CallRpcMethod(peerId, rpcBehaviour.networkId, option, rpcCall, (object obj) => callback((T)obj));
+        public bool CallRpcMethod<T>(string peerId, NetworkId? networkId, SendOption option, RpcCall rpcCall, Action<T> callback)
+            => CallRpcMethod(peerId, networkId, option, rpcCall, (object obj) => callback((T)obj));
+
+        private bool CallRpcMethod(string peerId, NetworkId? networkId, SendOption option, RpcCall rpcCall, Action<object> callback) {
             byte prefix = 0;
             prefix &= (byte)DataType.RPC << 6;
             prefix &= (byte)((byte)option << 4);
             prefix &= (byte)RpcType.Call;
 
-            if (RpcRegistry.GetRpcMethod(methodId) == null) throw new Exception($"Method '{methodId}' is not a rpc method. Make sure it is decorated with [RpcMethod] attribute.");
+            if (RpcRegistry.GetRpcMethod(rpcCall.methodId) == null) throw new Exception($"Method '{rpcCall.methodId}' is not a rpc method. Make sure it is decorated with [RpcMethod] attribute.");
 
             List<byte> _data = new() { prefix };
 
-            byte[] methodIdBytes = Encoding.UTF8.GetBytes(methodId);
-            byte[] methodIdBytesLen = BitConverter.GetBytes(methodIdBytes.Length);
-            _data.AddRange(methodIdBytesLen);
-            _data.AddRange(methodIdBytes);
+            var requestId = networkIdRegistry.AllocateRequestId(callback);
+            Utils.AppendData(ref _data, requestId);
 
-            foreach (var arg in args) {
+            if (networkId == null) Utils.AppendEmptySequence(ref _data);
+            else Utils.AppendData(ref _data, networkId);
+
+            Utils.AppendData(ref _data, rpcCall.methodId);
+
+            foreach (var arg in rpcCall.parameters) {
                 var type = arg.GetType();
-                var serializedType = MessagePackSerializer.Serialize(type);
-                var serializedTypeSize = BitConverter.GetBytes(serializedType.Length);
-                _data.AddRange(serializedTypeSize);
-                _data.AddRange(serializedType);
+                var typewrapper = new TypeWrapper(type);
+                Utils.AppendData(ref _data, typewrapper);
 
-                var serializedArg = MessagePackSerializer.Serialize(type, arg);
-                var serializedArgSize = BitConverter.GetBytes(serializedArg.Length);
-                _data.AddRange(serializedArgSize);
-                _data.AddRange(serializedArg);
+                Utils.AppendData(ref _data, arg);
             }
 
             return SendData(peerId, _data.ToArray(), option);
         }
+        #endregion
+
+        #region RPC Get Property
+
+        public bool GetRpcStaticProperty<T>(string peerId, SendOption option, string propertyId, Action<T> callback)
+            => GetRpcProperty(peerId, networkId: null, propertyId, option, callback);
+        public async Task<T> GetRpcStaticPropertyAsync<T>(string peerId, SendOption option, string propertyId)
+            => await GetRpcPropertyAsync<T>(peerId, networkId: null, propertyId, option);
+        public IEnumerator GetRpcStaticProperty<T>(string peerId, SendOption option, string propertyId) {
+            yield return GetRpcProperty<T>(peerId, networkId: null, propertyId, option);
+        }
+
+        public IEnumerator GetRpcProperty<T>(string peerId, RpcBehaviour rpcBehaviour, string propertyId, SendOption option)
+            => GetRpcProperty<T>(peerId, rpcBehaviour.networkId, propertyId, option);
+        public IEnumerator GetRpcProperty<T>(string peerId, NetworkId? networkId, string propertyId, SendOption option) {
+            T result;
+            bool done = false;
+            GetRpcProperty(peerId, networkId, propertyId, option, (T obj) => {
+                result = obj;
+                done = true;
+            });
+            yield return new WaitUntil(() => done);
+        }
+
+        public async Task<T> GetRpcPropertyAsync<T>(string peerId, RpcBehaviour rpcBehaviour, string propertyId, SendOption option)
+            => await GetRpcPropertyAsync<T>(peerId, rpcBehaviour.networkId, propertyId, option);
+        public async Task<T> GetRpcPropertyAsync<T>(string peerId, NetworkId? networkId, string propertyId, SendOption option) {
+            var tcs = new TaskCompletionSource<T>();
+            GetRpcProperty(peerId, networkId, propertyId, option, (T obj) => tcs.SetResult(obj));
+            return await tcs.Task;
+        }
+
+        public bool GetRpcProperty<T>(string peerId, RpcBehaviour rpcBehaviour, string propertyId, SendOption option, Action<T> callback)
+            => GetRpcProperty(peerId, rpcBehaviour.networkId, propertyId, option, (object obj) => callback((T)obj));
+        public bool GetRpcProperty<T>(string peerId, NetworkId? networkId, string propertyId, SendOption option, Action<T> callback)
+            => GetRpcProperty(peerId, networkId, propertyId, option, (object obj) => callback((T)obj));
+
+        private bool GetRpcProperty(string peerId, NetworkId? networkId, string propertyId, SendOption option, Action<object> callback) {
+            byte prefix = 0;
+            prefix &= (byte)DataType.RPC << 6;
+            prefix &= (byte)((byte)option << 4);
+            prefix &= (byte)RpcType.Get;
+
+            if (RpcRegistry.GetRpcProperty(propertyId) == null) throw new Exception($"Property '{propertyId}' is not a rpc property. Make sure it is decorated with [RpcProperty] attribute.");
+
+            List<byte> _data = new() { prefix };
+
+            var requestId = networkIdRegistry.AllocateRequestId(callback);
+            Utils.AppendData(ref _data, requestId);
+
+            if (networkId == null) Utils.AppendEmptySequence(ref _data);
+            else Utils.AppendData(ref _data, networkId);
+
+            Utils.AppendData(ref _data, propertyId);
+
+            return SendData(peerId, _data.ToArray(), option);
+        }
+
+        #endregion
+
+        #region RPC Set Property
+        public bool SetRpcStaticProperty<T>(string peerId, SendOption option, string propertyId, T value, Action callback)
+            => SetRpcProperty(peerId, networkId: null, propertyId, value, option, callback);
+        public async Task SetRpcStaticPropertyAsync<T>(string peerId, SendOption option, string propertyId, T value)
+            => await SetRpcPropertyAsync(peerId, networkId: null, propertyId, value, option);
+        public IEnumerator SetRpcStaticProperty<T>(string peerId, SendOption option, string propertyId, T value) {
+            yield return SetRpcProperty(peerId, networkId: null, propertyId, value, option);
+        }
+
+        public IEnumerator SetRpcProperty<T>(string peerId, RpcBehaviour rpcBehaviour, string propertyId, T value, SendOption option)
+            => SetRpcProperty(peerId, rpcBehaviour.networkId, propertyId, value, option);
+        public IEnumerator SetRpcProperty<T>(string peerId, NetworkId? networkId, string propertyId, T value, SendOption option) {
+            bool done = false;
+            SetRpcProperty(peerId, networkId, propertyId, value, option, () => done = true);
+            yield return new WaitUntil(() => done);
+        }
+
+        public async Task SetRpcPropertyAsync<T>(string peerId, RpcBehaviour rpcBehaviour, string propertyId, T value, SendOption option)
+            => await SetRpcPropertyAsync(peerId, rpcBehaviour.networkId, propertyId, value, option);
+        public async Task SetRpcPropertyAsync<T>(string peerId, NetworkId? networkId, string propertyId, T value, SendOption option) {
+            var tcs = new TaskCompletionSource<object>();
+            SetRpcProperty(peerId, networkId, propertyId, value, option, () => tcs.SetResult(null));
+            await tcs.Task;
+        }
+
+        public bool SetRpcProperty<T>(string peerId, RpcBehaviour rpcBehaviour, string propertyId, T value, SendOption option, Action callback)
+            => SetRpcProperty(peerId, rpcBehaviour.networkId, propertyId, value, option, (object obj) => callback());
+        public bool SetRpcProperty<T>(string peerId, NetworkId? networkId, string propertyId, T value, SendOption option, Action callback)
+            => SetRpcProperty(peerId, networkId, propertyId, value, option, (object obj) => callback());
+
+        private bool SetRpcProperty(string peerId, NetworkId? networkId, string propertyId, object value, SendOption option, Action<object> callback) {
+            byte prefix = 0;
+            prefix &= (byte)DataType.RPC << 6;
+            prefix &= (byte)((byte)option << 4);
+            prefix &= (byte)RpcType.Set;
+
+            if (RpcRegistry.GetRpcProperty(propertyId) == null) throw new Exception($"Property '{propertyId}' is not a rpc property. Make sure it is decorated with [RpcProperty] attribute.");
+
+            List<byte> _data = new() { prefix };
+
+            var requestId = networkIdRegistry.AllocateRequestId(callback);
+            Utils.AppendData(ref _data, requestId);
+
+            if (networkId == null) Utils.AppendEmptySequence(ref _data);
+            else Utils.AppendData(ref _data, networkId);
+
+            Utils.AppendData(ref _data, propertyId);
+
+            var typewrapper = new TypeWrapper(value.GetType());
+            Utils.AppendData(ref _data, typewrapper);
+
+            Utils.AppendData(value.GetType(), ref _data, value);
+
+            return SendData(peerId, _data.ToArray(), option);
+        }
+
+        #endregion
 
         #endregion
 
@@ -670,6 +931,7 @@ namespace LiteP2PNet {
 
         private void CleanUp() {
             if (_signaling != null) DisconnectServer();
+            networkIdRegistry.Dispose();
         }
 
         void OnApplicationQuit() {

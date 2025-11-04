@@ -1,4 +1,5 @@
 using System;
+using MessagePack;
 
 /**
 [DataType(2), SendOption(2), None(4)] [Data]
@@ -24,7 +25,17 @@ namespace LiteP2PNet {
         Return = 0b0001,
         Get = 0b0010,
         Set = 0b0011,
+        Instanciate = 0b0100,
+        Destroy = 0b0101,
         Error = 0b1111
+    }
+
+    [MessagePackObject]
+    public struct RpcCall {
+        [Key(0)]
+        public string methodId;
+        [Key(1)]
+        public object[] parameters;
     }
 
     [Serializable]

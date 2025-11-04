@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using UnityEngine;
 
 namespace LiteP2PNet {
     [AttributeUsage(AttributeTargets.Method)]
@@ -21,6 +22,28 @@ namespace LiteP2PNet {
             Id = id;
             CanRead = canRead;
             CanWrite = canWrite;
+        }
+    }
+
+    public class RpcBehaviour : MonoBehaviour {
+        public NetworkId networkId { get; private set; }
+
+        protected virtual void Awake() {
+            networkId = Network.Instance.AllocateNetworkId(this);
+        }
+
+        protected virtual void OnDestroy() {
+            Network.Instance.ReleaseNetworkId(networkId);
+        }
+    }
+    
+    public class SharedRpcBehaviour : RpcBehaviour {
+        protected override void Awake() {
+            base.Awake();
+        }
+
+        protected override void OnDestroy() {
+            base.OnDestroy();
         }
     }
 
