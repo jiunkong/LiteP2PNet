@@ -60,6 +60,12 @@ namespace LiteP2PNet {
     }
 
     [Serializable]
+    internal class UserChangeData {
+        public string type;
+        public string target;
+    }
+
+    [Serializable]
     internal class NullableInt {
         public int value;
         public bool hasValue;

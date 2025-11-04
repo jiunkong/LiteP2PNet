@@ -36,6 +36,9 @@ namespace LiteP2PNet {
         private ConcurrentQueue<SignalingMessage> _incomingMessageQueue = new();
         private Dictionary<string, bool> _isDescriptionReadyMap = new();
 
+        public Action<string> onPeerConnected = null;
+        public Action<string> onPeerDisconnected = null;
+
         private string _userId;
         private string _serverUrl;
 
@@ -116,7 +119,7 @@ namespace LiteP2PNet {
 
         public void Init(string serverUrl, string userId, string[] stunServers = null, string[] turnServers = null, bool debugLog = false) {
             if (userId.Length > 256) throw new Exception("User ID must be less than 256 characters");
-            
+
             _userId = userId;
             _serverUrl = serverUrl;
             isConnectedToServer = false;
@@ -209,6 +212,118 @@ namespace LiteP2PNet {
             }
             catch (Exception ex) {
                 throw new Exception("Failed to send signaling message", ex);
+            }
+        }
+
+        private IEnumerator HandleSignalingMessage(SignalingMessage message) {
+            switch (message.type) {
+                case "offer":
+                    yield return HandleOffer(message);
+                    break;
+                case "answer":
+                    yield return HandleAnswer(message);
+                    break;
+                case "ice-candidate":
+                    HandleIceCandidate(message);
+                    break;
+                case "user-change":
+                    HandleUserChange(message);
+                    break;
+                default:
+                    if (_debugLog) Debug.LogWarning($"Unknown signaling message type: {message.type}");
+                    break;
+            }
+        }
+
+        private IEnumerator HandleOffer(SignalingMessage message)
+        {
+            SetupPeerConnection(message.from);
+
+            var offerData = JsonUtility.FromJson<OfferAnswerData>(message.body);
+            var offer = new RTCSessionDescription
+            {
+                type = RTCSdpType.Offer,
+                sdp = offerData.sdp
+            };
+
+            var connection = _peerConnectionMap[message.from];
+            yield return connection.SetRemoteDescription(ref offer);
+
+            var answerOp = connection.CreateAnswer();
+            yield return answerOp;
+            var answerDesc = answerOp.Desc;
+            yield return connection.SetLocalDescription(ref answerDesc);
+
+            ProcessQueuedRemoteIceCandidates(message.from);
+            _isDescriptionReadyMap[message.from] = true;
+
+            SendSignalingMessage("answer", message.from, new OfferAnswerData {
+                sdp = answerDesc.sdp,
+                type = answerDesc.type.ToString().ToLower()
+            });
+        }
+
+        private void ProcessQueuedRemoteIceCandidates(string peerId)
+        {
+            if (_isDescriptionReadyMap.ContainsKey(peerId) && _isDescriptionReadyMap[peerId]) return;
+
+            if (_remoteIceCandidatesMap.TryGetValue(peerId, out var _remoteIceCandidates))
+            {
+                foreach (var c in _remoteIceCandidates)
+                {
+                    if (_debugLog) Debug.Log($"Processing Queued Remote ICE Candidate: {c.Candidate}");
+                    _peerConnectionMap[peerId]?.AddIceCandidate(c);
+                }
+                _remoteIceCandidatesMap.Remove(peerId);
+            }
+        }
+
+        private IEnumerator HandleAnswer(SignalingMessage message)
+        {
+            var answerData = JsonUtility.FromJson<OfferAnswerData>(message.body);
+            var answer = new RTCSessionDescription
+            {
+                type = RTCSdpType.Answer,
+                sdp = answerData.sdp
+            };
+
+            var connection = _peerConnectionMap[message.from];
+            yield return connection.SetRemoteDescription(ref answer);
+
+            ProcessQueuedRemoteIceCandidates(message.from);
+            _isDescriptionReadyMap[message.from] = true;
+        }
+
+        private void HandleIceCandidate(SignalingMessage message) {
+            var candidateData = JsonUtility.FromJson<IceCandidateData>(message.body);
+            var candidate = new RTCIceCandidate(new RTCIceCandidateInit {
+                candidate = candidateData.candidate,
+                sdpMid = candidateData.sdpMid,
+                sdpMLineIndex = candidateData.sdpMLineIndex.ToNullable()
+            });
+
+            if (_isDescriptionReadyMap.ContainsKey(message.from) && _isDescriptionReadyMap[message.from]) {
+                _peerConnectionMap[message.from].AddIceCandidate(candidate);
+                Debug.Log($"Added Remote ICE Candidate: {candidate.Candidate}");
+            }
+            else {
+                Debug.Log($"Queued Remote ICE Candidate: {candidate.Candidate}");
+            }
+
+            if (_remoteIceCandidatesMap.ContainsKey(message.from)) {
+                _remoteIceCandidatesMap[message.from].Add(candidate);
+            }
+            else {
+                _remoteIceCandidatesMap.Add(message.from, new() { candidate });
+            }
+        }
+
+        private void HandleUserChange(SignalingMessage message) {
+            var userChangeData = JsonUtility.FromJson<UserChangeData>(message.body);
+            if (userChangeData.type == "join") {
+                onPeerConnected?.Invoke(userChangeData.target);
+            } else if (userChangeData.type == "leave") {
+                onPeerDisconnected?.Invoke(userChangeData.target);
             }
         }
 
@@ -348,107 +463,6 @@ namespace LiteP2PNet {
             }
         }
 
-        private IEnumerator HandleSignalingMessage(SignalingMessage message) {
-            switch (message.type) {
-                case "offer":
-                    yield return HandleOffer(message);
-                    break;
-                case "answer":
-                    yield return HandleAnswer(message);
-                    break;
-                case "ice-candidate":
-                    HandleIceCandidate(message);
-                    break;
-                case "user-change":
-                    break;
-                default:
-                    if (_debugLog) Debug.LogWarning($"Unknown signaling message type: {message.type}");
-                    break;
-            }
-        }
-
-        private IEnumerator HandleOffer(SignalingMessage message)
-        {
-            SetupPeerConnection(message.from);
-
-            var offerData = JsonUtility.FromJson<OfferAnswerData>(message.body);
-            var offer = new RTCSessionDescription
-            {
-                type = RTCSdpType.Offer,
-                sdp = offerData.sdp
-            };
-
-            var connection = _peerConnectionMap[message.from];
-            yield return connection.SetRemoteDescription(ref offer);
-
-            var answerOp = connection.CreateAnswer();
-            yield return answerOp;
-            var answerDesc = answerOp.Desc;
-            yield return connection.SetLocalDescription(ref answerDesc);
-
-            ProcessQueuedRemoteIceCandidates(message.from);
-            _isDescriptionReadyMap[message.from] = true;
-
-            SendSignalingMessage("answer", message.from, new OfferAnswerData {
-                sdp = answerDesc.sdp,
-                type = answerDesc.type.ToString().ToLower()
-            });
-        }
-
-        private void ProcessQueuedRemoteIceCandidates(string peerId)
-        {
-            if (_isDescriptionReadyMap.ContainsKey(peerId) && _isDescriptionReadyMap[peerId]) return;
-
-            if (_remoteIceCandidatesMap.TryGetValue(peerId, out var _remoteIceCandidates))
-            {
-                foreach (var c in _remoteIceCandidates)
-                {
-                    if (_debugLog) Debug.Log($"Processing Queued Remote ICE Candidate: {c.Candidate}");
-                    _peerConnectionMap[peerId]?.AddIceCandidate(c);
-                }
-                _remoteIceCandidatesMap.Remove(peerId);
-            }
-        }
-
-        private IEnumerator HandleAnswer(SignalingMessage message)
-        {
-            var answerData = JsonUtility.FromJson<OfferAnswerData>(message.body);
-            var answer = new RTCSessionDescription
-            {
-                type = RTCSdpType.Answer,
-                sdp = answerData.sdp
-            };
-
-            var connection = _peerConnectionMap[message.from];
-            yield return connection.SetRemoteDescription(ref answer);
-
-            ProcessQueuedRemoteIceCandidates(message.from);
-            _isDescriptionReadyMap[message.from] = true;
-        }
-
-        private void HandleIceCandidate(SignalingMessage message) {
-            var candidateData = JsonUtility.FromJson<IceCandidateData>(message.body);
-            var candidate = new RTCIceCandidate(new RTCIceCandidateInit {
-                candidate = candidateData.candidate,
-                sdpMid = candidateData.sdpMid,
-                sdpMLineIndex = candidateData.sdpMLineIndex.ToNullable()
-            });
-
-            if (_isDescriptionReadyMap.ContainsKey(message.from) && _isDescriptionReadyMap[message.from]) {
-                _peerConnectionMap[message.from].AddIceCandidate(candidate);
-                Debug.Log($"Added Remote ICE Candidate: {candidate.Candidate}");
-            }
-            else {
-                Debug.Log($"Queued Remote ICE Candidate: {candidate.Candidate}");
-            }
-
-            if (_remoteIceCandidatesMap.ContainsKey(message.from)) {
-                _remoteIceCandidatesMap[message.from].Add(candidate);
-            }
-            else {
-                _remoteIceCandidatesMap.Add(message.from, new() { candidate });
-            }
-        }
         #endregion
 
         #region Send
