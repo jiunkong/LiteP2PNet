@@ -408,6 +408,7 @@ namespace LiteP2PNet {
                         onPeerConnected?.Invoke(peerId);
                         break;
                     case RTCIceConnectionState.Disconnected:
+                        DisconnectPeer(peerId);
                         onPeerDisconnected?.Invoke(peerId);
                         break;
                 }
