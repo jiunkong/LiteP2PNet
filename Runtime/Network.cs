@@ -227,7 +227,7 @@ namespace LiteP2PNet {
                     HandleIceCandidate(message);
                     break;
                 case "user-change":
-                    HandleUserChange(message);
+                    //HandleUserChange(message);
                     break;
                 default:
                     if (_debugLog) Debug.LogWarning($"Unknown signaling message type: {message.type}");
@@ -318,14 +318,15 @@ namespace LiteP2PNet {
             }
         }
 
-        private void HandleUserChange(SignalingMessage message) {
-            var userChangeData = JsonUtility.FromJson<UserChangeData>(message.body);
-            if (userChangeData.type == "join") {
-                onPeerConnected?.Invoke(userChangeData.target);
-            } else if (userChangeData.type == "leave") {
-                onPeerDisconnected?.Invoke(userChangeData.target);
-            }
-        }
+        // private void HandleUserChange(SignalingMessage message) {
+        //     var userChangeData = JsonUtility.FromJson<UserChangeData>(message.body);
+        //     Debug.Log($"userchange: {userChangeData.type} {userChangeData.target}");
+        //     if (userChangeData.type == "join") {
+        //         onPeerConnected?.Invoke(userChangeData.target);
+        //     } else if (userChangeData.type == "leave") {
+        //         onPeerDisconnected?.Invoke(userChangeData.target);
+        //     }
+        // }
 
         #endregion
 
@@ -401,6 +402,15 @@ namespace LiteP2PNet {
 
             connection.OnIceConnectionChange = state => {
                 if (_debugLog) Debug.Log($"ICE connection state for {peerId}: {state}");
+                switch (state) {
+                    case RTCIceConnectionState.Connected:
+                    case RTCIceConnectionState.Completed:
+                        onPeerConnected?.Invoke(peerId);
+                        break;
+                    case RTCIceConnectionState.Disconnected:
+                        onPeerDisconnected?.Invoke(peerId);
+                        break;
+                }
             };
 
             _peerConnectionMap.Add(peerId, connection);
