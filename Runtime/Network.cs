@@ -234,10 +234,136 @@ namespace LiteP2PNet {
                     break;
             }
         }
+        // private void HandleUserChange(SignalingMessage message) {
+        //     var userChangeData = JsonUtility.FromJson<UserChangeData>(message.body);
+        //     Debug.Log($"userchange: {userChangeData.type} {userChangeData.target}");
+        //     if (userChangeData.type == "join") {
+        //         onPeerConnected?.Invoke(userChangeData.target);
+        //     } else if (userChangeData.type == "leave") {
+        //         onPeerDisconnected?.Invoke(userChangeData.target);
+        //     }
+        // }
+
+        #endregion
+
+        #region Peer Connection
+        public IEnumerator ConnectPeerAsync(string peerId) {
+            SetupPeerConnection(peerId, true);
+
+            var connection = _peerConnectionMap[peerId];
+            var offerOp = connection.CreateOffer();
+            yield return offerOp;
+            var offerDesc = offerOp.Desc;
+            connection.SetLocalDescription(ref offerDesc);
+
+            SendSignalingMessage("offer", peerId, new OfferAnswerData {
+                sdp = offerDesc.sdp,
+                type = offerDesc.type.ToString().ToLower()
+            });
+
+            if (_debugLog) Debug.Log($"Connecting to {peerId}...");
+        }
+
+        public void DisconnectPeer(string peerId) {
+            if (_peerConnectionMap.TryGetValue(peerId, out var connection)) {
+                connection.Close();
+                connection.Dispose();
+                _peerConnectionMap.Remove(peerId);
+            }
+
+            _myIceCandidatesMap.Remove(peerId);
+            _isDescriptionReadyMap.Remove(peerId);
+            _dataChannelListMap.Remove(peerId);
+            _handlerMap.Remove(peerId);
+        }
+
+        private void SetupPeerConnection(string peerId, bool isOfferer) {
+            var config = new RTCConfiguration { iceServers = _iceServers.ToArray() };
+
+            var connection = new RTCPeerConnection(ref config);
+
+            _handlerMap[peerId] = new();
+
+            if (isOfferer) {
+                List<RTCDataChannel> channels = new() {
+                    connection.CreateDataChannel("OrderedReliable", new RTCDataChannelInit { ordered = true }),
+                    connection.CreateDataChannel("OrderedUnReliable", new RTCDataChannelInit { ordered = true, maxRetransmits = 0 }),
+                    connection.CreateDataChannel("UnorderedReliable", new RTCDataChannelInit { ordered = false }),
+                    connection.CreateDataChannel("UnorderedUnreliable", new RTCDataChannelInit { ordered = false, maxRetransmits = 0 })
+                };
+
+                foreach (var channel in channels) {
+                    channel.OnMessage += (rawdata) => {
+                        HandleDataChannel(peerId, rawdata);
+                    };
+                }
+
+                _dataChannelListMap.Add(peerId, channels);
+            }
+
+            if (_debugLog) Debug.Log($"Created peer connection for {peerId}");
+
+            _myIceCandidatesMap.Add(peerId, new());
+
+            connection.OnIceCandidate = candidate => {
+                if (candidate != null) {
+                    lock (_myIceCandidatesMap) {
+                        _myIceCandidatesMap[peerId]?.Add(candidate);
+                    }
+                    if (_debugLog) Debug.Log($"New Local ICE candidate for {peerId}: {candidate.Candidate}");
+
+                    SendSignalingMessage("ice-candidate", peerId, new IceCandidateData {
+                        candidate = candidate.Candidate,
+                        sdpMid = candidate.SdpMid,
+                        sdpMLineIndex = new NullableInt(candidate.SdpMLineIndex)
+                    });
+                }
+            };
+
+            connection.OnIceConnectionChange = state => {
+                if (_debugLog) Debug.Log($"ICE connection state for {peerId}: {state}");
+                switch (state) {
+                    case RTCIceConnectionState.Connected:
+                    case RTCIceConnectionState.Completed:
+                        onPeerConnected?.Invoke(peerId);
+                        break;
+                    case RTCIceConnectionState.Disconnected:
+                        DisconnectPeer(peerId);
+                        onPeerDisconnected?.Invoke(peerId);
+                        break;
+                }
+            };
+
+            connection.OnDataChannel = channel => {
+                if (_debugLog) Debug.Log($"New data channel for {peerId}: {channel.Label}");
+
+                if (!_dataChannelListMap.ContainsKey(peerId)) {
+                    _dataChannelListMap.Add(peerId, new() { null, null, null, null });
+                }
+
+                var channelList = _dataChannelListMap[peerId];
+                switch (channel.Label) {
+                    case "OrderedReliable":
+                        channelList[0] = channel;
+                        break;
+                    case "OrderedUnReliable":
+                        channelList[1] = channel;
+                        break;
+                    case "UnorderedReliable":
+                        channelList[2] = channel;
+                        break;
+                    case "UnorderedUnreliable":
+                        channelList[3] = channel;
+                        break;
+                }
+            };
+
+            _peerConnectionMap.Add(peerId, connection);
+        }
 
         private IEnumerator HandleOffer(SignalingMessage message)
         {
-            SetupPeerConnection(message.from);
+            SetupPeerConnection(message.from, false);
 
             var offerData = JsonUtility.FromJson<OfferAnswerData>(message.body);
             var offer = new RTCSessionDescription
@@ -318,105 +444,6 @@ namespace LiteP2PNet {
             }
         }
 
-        // private void HandleUserChange(SignalingMessage message) {
-        //     var userChangeData = JsonUtility.FromJson<UserChangeData>(message.body);
-        //     Debug.Log($"userchange: {userChangeData.type} {userChangeData.target}");
-        //     if (userChangeData.type == "join") {
-        //         onPeerConnected?.Invoke(userChangeData.target);
-        //     } else if (userChangeData.type == "leave") {
-        //         onPeerDisconnected?.Invoke(userChangeData.target);
-        //     }
-        // }
-
-        #endregion
-
-        #region Peer Connection
-        public IEnumerator ConnectPeerAsync(string peerId) {
-            SetupPeerConnection(peerId);
-
-            var connection = _peerConnectionMap[peerId];
-            var offerOp = connection.CreateOffer();
-            yield return offerOp;
-            var offerDesc = offerOp.Desc;
-            connection.SetLocalDescription(ref offerDesc);
-
-            SendSignalingMessage("offer", peerId, new OfferAnswerData {
-                sdp = offerDesc.sdp,
-                type = offerDesc.type.ToString().ToLower()
-            });
-
-            if (_debugLog) Debug.Log($"Connecting to {peerId}...");
-        }
-
-        public void DisconnectPeer(string peerId) {
-            if (_peerConnectionMap.TryGetValue(peerId, out var connection)) {
-                connection.Close();
-                connection.Dispose();
-                _peerConnectionMap.Remove(peerId);
-            }
-
-            _myIceCandidatesMap.Remove(peerId);
-            _isDescriptionReadyMap.Remove(peerId);
-            _dataChannelListMap.Remove(peerId);
-            _handlerMap.Remove(peerId);
-        }
-
-        private void SetupPeerConnection(string peerId) {
-            var config = new RTCConfiguration { iceServers = _iceServers.ToArray() };
-
-            var connection = new RTCPeerConnection(ref config);
-
-            List<RTCDataChannel> channels = new() {
-                connection.CreateDataChannel("OrderedReliable", new RTCDataChannelInit { ordered = true }),
-                connection.CreateDataChannel("OrderedUnReliable", new RTCDataChannelInit { ordered = true, maxRetransmits = 0 }),
-                connection.CreateDataChannel("UnorderedReliable", new RTCDataChannelInit { ordered = false }),
-                connection.CreateDataChannel("UnorderedUnreliable", new RTCDataChannelInit { ordered = false, maxRetransmits = 0 })
-            };
-
-            _handlerMap[peerId] = new();
-
-            foreach (var channel in channels) {
-                channel.OnMessage += (rawdata) => {
-                    HandleDataChannel(peerId, rawdata);
-                };
-            }
-
-            if (_debugLog) Debug.Log($"Created peer connection for {peerId}");
-
-            _myIceCandidatesMap.Add(peerId, new());
-
-            connection.OnIceCandidate = candidate => {
-                if (candidate != null) {
-                    lock (_myIceCandidatesMap) {
-                        _myIceCandidatesMap[peerId]?.Add(candidate);
-                    }
-                    if (_debugLog) Debug.Log($"New Local ICE candidate for {peerId}: {candidate.Candidate}");
-
-                    SendSignalingMessage("ice-candidate", peerId, new IceCandidateData {
-                        candidate = candidate.Candidate,
-                        sdpMid = candidate.SdpMid,
-                        sdpMLineIndex = new NullableInt(candidate.SdpMLineIndex)
-                    });
-                }
-            };
-
-            connection.OnIceConnectionChange = state => {
-                if (_debugLog) Debug.Log($"ICE connection state for {peerId}: {state}");
-                switch (state) {
-                    case RTCIceConnectionState.Connected:
-                    case RTCIceConnectionState.Completed:
-                        onPeerConnected?.Invoke(peerId);
-                        break;
-                    case RTCIceConnectionState.Disconnected:
-                        DisconnectPeer(peerId);
-                        onPeerDisconnected?.Invoke(peerId);
-                        break;
-                }
-            };
-
-            _peerConnectionMap.Add(peerId, connection);
-            _dataChannelListMap.Add(peerId, channels);
-        }
 
         private void HandleDataChannel(string peerId, byte[] rawdata) {
             if (!_handlerMap.TryGetValue(peerId, out var handler)) return;
@@ -480,7 +507,13 @@ namespace LiteP2PNet {
         private bool SendData(string peerId, byte[] data, SendOption option) {
             if (!_dataChannelListMap.TryGetValue(peerId, out var channels)) return false;
 
-            channels[(byte)option].Send(data);
+            var channel = channels[(byte)option];
+            if (channel == null) {
+                Debug.LogError($"Channel for {option} is not ready");
+                return false;
+            }
+
+            channel.Send(data);
             return true;
         }
 
