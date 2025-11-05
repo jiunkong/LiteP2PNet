@@ -287,7 +287,7 @@ namespace LiteP2PNet {
             if (isOfferer) {
                 List<RTCDataChannel> channels = new() {
                     connection.CreateDataChannel("OrderedReliable", new RTCDataChannelInit { ordered = true }),
-                    connection.CreateDataChannel("OrderedUnReliable", new RTCDataChannelInit { ordered = true, maxRetransmits = 0 }),
+                    connection.CreateDataChannel("OrderedUnreliable", new RTCDataChannelInit { ordered = true, maxRetransmits = 0 }),
                     connection.CreateDataChannel("UnorderedReliable", new RTCDataChannelInit { ordered = false }),
                     connection.CreateDataChannel("UnorderedUnreliable", new RTCDataChannelInit { ordered = false, maxRetransmits = 0 })
                 };
@@ -341,12 +341,14 @@ namespace LiteP2PNet {
                     _dataChannelListMap.Add(peerId, new() { null, null, null, null });
                 }
 
+                channel.OnMessage += (rawdata) => HandleDataChannel(peerId, rawdata);
+
                 var channelList = _dataChannelListMap[peerId];
                 switch (channel.Label) {
                     case "OrderedReliable":
                         channelList[0] = channel;
                         break;
-                    case "OrderedUnReliable":
+                    case "OrderedUnreliable":
                         channelList[1] = channel;
                         break;
                     case "UnorderedReliable":
