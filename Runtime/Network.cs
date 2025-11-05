@@ -320,15 +320,20 @@ namespace LiteP2PNet {
                 }
             };
 
+            bool isConnected = false;
             connection.OnIceConnectionChange = state => {
                 if (_debugLog) Debug.Log($"ICE connection state for {peerId}: {state}");
                 switch (state) {
                     case RTCIceConnectionState.Connected:
                     case RTCIceConnectionState.Completed:
-                        onPeerConnected?.Invoke(peerId);
+                        if (!isConnected) {
+                            onPeerConnected?.Invoke(peerId);
+                            isConnected = true;
+                        }
                         break;
                     case RTCIceConnectionState.Disconnected:
                         DisconnectPeer(peerId);
+                        isConnected = false;
                         onPeerDisconnected?.Invoke(peerId);
                         break;
                 }
