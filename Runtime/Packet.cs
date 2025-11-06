@@ -18,15 +18,6 @@ namespace LiteP2PNet {
             return JsonUtility.FromJson(json, type);
         };
 
-        internal static readonly Func<object, Type, byte[]> msgpackPacketSerializer = (obj, type) => {
-            byte[] bytes = MessagePack.MessagePackSerializer.Serialize(type, obj);
-            return bytes;
-        };
-        
-        internal static readonly Func<byte[], Type, object> msgpackPacketDeserializer = (bytes, type) => {
-            return MessagePack.MessagePackSerializer.Deserialize(type, bytes);
-        };
-
         static PacketRegistry() {
             var types = AppDomain.CurrentDomain.GetAssemblies().SelectMany(asm => asm.GetTypes()).Where(t => t.IsDefined(typeof(Packet)));
 

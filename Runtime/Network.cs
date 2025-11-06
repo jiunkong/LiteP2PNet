@@ -74,11 +74,6 @@ namespace LiteP2PNet {
             packetDeserializer = PacketRegistry.jsonPacketDeserializer;
         }
 
-        public void UseMessagePackPacketSerializer() {
-            packetSerializer = PacketRegistry.msgpackPacketSerializer;
-            packetDeserializer = PacketRegistry.msgpackPacketDeserializer;
-        }
-
         public void UseCustomPacketSerializer(Func<object, Type, byte[]> serializer, Func<byte[], Type, object> deserializer) {
             packetSerializer = serializer;
             packetDeserializer = deserializer;
