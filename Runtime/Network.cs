@@ -31,6 +31,7 @@ namespace LiteP2PNet {
 
         private WebSocket _signaling;
         private Dictionary<string, RTCPeerConnection> _peerConnectionMap = new();
+        public string[] peers => _peerConnectionMap.Keys.ToArray();
         private Dictionary<string, List<RTCIceCandidate>> _myIceCandidatesMap = new();
         private Dictionary<string, List<RTCIceCandidate>> _remoteIceCandidatesMap = new();
         private ConcurrentQueue<SignalingMessage> _incomingMessageQueue = new();

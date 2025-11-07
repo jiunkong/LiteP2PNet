@@ -38,6 +38,14 @@ namespace LiteP2PNet {
         public object[] parameters;
     }
 
+    // [MessagePackObject]
+    // public struct RpcInstanciateInfo {
+    //     [Key(0)]
+    //     public string prefab;
+    //     [Key(1)]
+    //     public string 
+    // }
+
     [Serializable]
     internal class SignalingMessage {
         public string type;

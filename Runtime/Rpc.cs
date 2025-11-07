@@ -42,6 +42,10 @@ namespace LiteP2PNet {
             base.Awake();
         }
 
+        protected virtual void OnInstanciate() {
+            
+        }
+
         protected override void OnDestroy() {
             base.OnDestroy();
         }
