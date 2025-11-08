@@ -7,7 +7,6 @@ using System.Collections.Concurrent;
 using System.Text;
 using System.Collections.Generic;
 using System.Threading.Tasks;
-using MessagePack;
 using System.Linq;
 
 namespace LiteP2PNet {
@@ -28,6 +27,7 @@ namespace LiteP2PNet {
                 return _instance;
             }
         }
+        public static void ForAllPeers(Action<string> action, string[] except = null) => Instance.peers.Except(except).ToList().ForEach(action);
 
         private WebSocket _signaling;
         private Dictionary<string, RTCPeerConnection> _peerConnectionMap = new();
