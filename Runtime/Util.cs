@@ -73,6 +73,7 @@ namespace LiteP2PNet {
             set => TypeName = Network.useAssemblyQualifiedNameForTypes ? value.AssemblyQualifiedName : value.FullName;
         }
 
+        public TypeWrapper() { }
         public TypeWrapper(Type type) => Type = type;
     }
 
