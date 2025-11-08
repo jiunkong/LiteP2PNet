@@ -77,6 +77,27 @@ namespace LiteP2PNet {
         public TypeWrapper(Type type) => Type = type;
     }
 
+    [Serializable]
+    internal class NullableInt {
+        public int value;
+        public bool hasValue;
+
+        public NullableInt(int? v) {
+            if (v == null) {
+                hasValue = false;
+                value = 0;
+            }
+            else {
+                value = v.Value;
+                hasValue = true;
+            }
+        }
+
+        public int? ToNullable() {
+            return hasValue ? value : null;
+        }
+    }
+
     internal class PairMap<T1, T2> {
         private readonly Dictionary<T1, T2> _map1 = new();
         private readonly Dictionary<T2, T1> _map2 = new();

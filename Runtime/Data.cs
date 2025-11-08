@@ -73,24 +73,13 @@ namespace LiteP2PNet {
         public string target;
     }
 
-    [Serializable]
-    internal class NullableInt {
-        public int value;
-        public bool hasValue;
+    public struct StunServer {
+        public string[] urls;
+    }
 
-        public NullableInt(int? v) {
-            if (v == null) {
-                hasValue = false;
-                value = 0;
-            }
-            else {
-                value = v.Value;
-                hasValue = true;
-            }
-        }
-
-        public int? ToNullable() {
-            return hasValue ? value : null;
-        }
+    public struct TurnServer {
+        public string[] urls;
+        public string username;
+        public string credential;
     }
 }
