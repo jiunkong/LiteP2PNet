@@ -25,7 +25,7 @@ namespace LiteP2PNet {
         Return = 0b0001,
         Get = 0b0010,
         Set = 0b0011,
-        Instanciate = 0b0100,
+        Instantiate = 0b0100,
         Destroy = 0b0101,
         Error = 0b1111
     }
@@ -36,6 +36,17 @@ namespace LiteP2PNet {
         public string methodId;
         [Key(1)]
         public object[] parameters;
+
+        public RpcCall(string methodId, params object[] parameters) {
+            this.methodId = methodId;
+            this.parameters = parameters;
+        }
+    }
+
+    [MessagePackObject]
+    public struct DataEndPoint {
+        public string sender;
+        public string receiver;
     }
 
     // [MessagePackObject]
@@ -68,9 +79,11 @@ namespace LiteP2PNet {
     }
 
     [Serializable]
-    internal class UserChangeData {
+    internal class LobbyUpdateData {
         public string type;
         public string target;
+        public string hostId;
+        public string[] members;
     }
 
     public struct StunServer {

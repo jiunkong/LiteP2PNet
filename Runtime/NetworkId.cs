@@ -28,22 +28,26 @@ namespace LiteP2PNet {
         private List<Action<object>> _requestCallbacks = new();
         private bool disposed = false;
 
-        private Dictionary<NetworkId, RpcBehaviour> _objectMap = new();
+        private Dictionary<NetworkId, object> _objectMap = new();
 
         public NetworkIdRegistry(string ownerId) {
             _ownerId = ownerId;
             _requestCallbacks.Add(null);   
         }
 
-        public NetworkId AllocateNetworkId(RpcBehaviour rpcBehaviour) {
+        public NetworkId AllocateNetworkId(object component) {
             if (disposed) throw new ObjectDisposedException(nameof(NetworkIdRegistry));
 
             var id = new NetworkId(_ownerId, _nextObjectId++);
-            _objectMap.Add(id, rpcBehaviour);
+            _objectMap.Add(id, component);
             return id;
         }
 
-        public RpcBehaviour FindRpcBehaviour(NetworkId id) => _objectMap[id];
+        public void RegisterNetworkId(NetworkId id, object component) => _objectMap.Add(id, component);
+
+        public object FindRpcComponent(NetworkId id) => _objectMap[id];
+
+        public bool TryFindRpcComponent(NetworkId id, out object component) => _objectMap.TryGetValue(id, out component);
 
         public void ReleaseNetworkId(NetworkId id) => _objectMap.Remove(id);
 
