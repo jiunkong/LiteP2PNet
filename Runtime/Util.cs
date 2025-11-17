@@ -64,7 +64,7 @@ namespace LiteP2PNet {
     }
     
     [MessagePackObject]
-    internal class TypeWrapper {
+    public class TypeWrapper {
         [Key(0)]
         public string TypeName { get; set; }
         [IgnoreMember]

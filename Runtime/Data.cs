@@ -47,17 +47,11 @@ namespace LiteP2PNet {
 
     [MessagePackObject]
     public struct DataEndPoint {
+        [Key(0)]
         public string sender;
+        [Key(1)]
         public string receiver;
     }
-
-    // [MessagePackObject]
-    // public struct RpcInstanciateInfo {
-    //     [Key(0)]
-    //     public string prefab;
-    //     [Key(1)]
-    //     public string 
-    // }
 
     [Serializable]
     internal class SignalingMessage {
@@ -101,9 +95,9 @@ namespace LiteP2PNet {
     [MessagePackObject]
     public class RpcInstantiationData {
         [Key(0)]
-        Dictionary<TypeWrapper, (TypeWrapper, byte[])[]> initArgs = new();
+        public Dictionary<TypeWrapper, (TypeWrapper, byte[])[]> initArgs = new();
         [Key(1)]
-        Dictionary<TypeWrapper, NetworkId> networkIds = new();
+        public Dictionary<TypeWrapper, NetworkId> networkIds = new();
 
         public RpcInstantiationData(Dictionary<Type, NetworkId> networkIds, RpcInitArgs args) {
             this.networkIds = networkIds.ToDictionary(x => new TypeWrapper(x.Key), x => x.Value);
