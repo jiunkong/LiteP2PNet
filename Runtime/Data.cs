@@ -99,6 +99,8 @@ namespace LiteP2PNet {
         [Key(1)]
         public Dictionary<TypeWrapper, NetworkId> networkIds = new();
 
+        public RpcInstantiationData() { }
+
         public RpcInstantiationData(Dictionary<Type, NetworkId> networkIds, RpcInitArgs args) {
             this.networkIds = networkIds.ToDictionary(x => new TypeWrapper(x.Key), x => x.Value);
 
