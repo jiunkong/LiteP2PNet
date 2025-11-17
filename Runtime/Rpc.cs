@@ -28,12 +28,22 @@ namespace LiteP2PNet {
         }
     }
 
-    public class RemoteRpcInstance<T> : MonoBehaviour where T : MonoBehaviour, IRpcObject<T> {
+    public interface IRpcInstance {
+        public void Init(bool isLocal, string prefabKey, NetworkId networkId, object[] initArgs);
+    }
+
+    public class RpcInstance<T> : MonoBehaviour, IRpcInstance where T : MonoBehaviour, IRpcObject<T> {
+        private bool inited = false;
+
         public string prefabKey { get; private set; }
         public NetworkId networkId { get; private set; }
         public object[] initArgs { get; private set; }
+        public bool isLocal { get; private set; }
 
-        internal void Init(string prefabKey, NetworkId networkId, object[] initArgs) {
+        public void Init(bool isLocal, string prefabKey, NetworkId networkId, object[] initArgs) {
+            if (inited) return;
+
+            this.isLocal = isLocal;
             this.prefabKey = prefabKey;
             this.networkId = networkId;
             this.initArgs = initArgs;
@@ -48,10 +58,21 @@ namespace LiteP2PNet {
         public GameObject Load(string prefabKey) => Resources.Load<GameObject>(prefabKey);
     }
 
+    public class RpcInitArgs {
+        internal Dictionary<Type, object[]> initArgs = new();
+
+        public RpcInitArgs() { }
+        public RpcInitArgs(Type type, params object[] args) => Add(type, args);
+        public RpcInitArgs(Dictionary<Type, object[]> initArgs) => this.initArgs = initArgs;
+
+        public void Add(Type type, params object[] args) => initArgs[type] = args;
+        public bool TryGet(Type type, out object[] args) => initArgs.TryGetValue(type, out args);
+    }
+
     public static class RpcFeature {
         private static IPrefabLoader _prefabLoader = new ResourcesPrefabLoader();
-
         public static void SetPrefabLoader(IPrefabLoader prefabLoader) => _prefabLoader = prefabLoader;
+        public static GameObject LoadPrefab(string prefabKey) => _prefabLoader.Load(prefabKey);
 
         #region Call
         public static bool CallStaticMethod<RetTy>(string userId, RpcCall rpcCall, Action<RetTy> callback, SendOption option)
@@ -110,48 +131,58 @@ namespace LiteP2PNet {
         }
         #endregion
 
-        // public static GameObject Instantiate(string prefabKey, RpcTarget target, SendOption option) {
-        //     var prefab = _prefabLoader.Load(prefabKey);
+        public static GameObject Instantiate(string prefabKey, RpcInstantiationTarget target, RpcInitArgs initArgs, Action callback, SendOption option) {
+            var prefab = LoadPrefab(prefabKey);
 
-        //     var rpcObjs = prefab.GetComponents<IBaseRpcObject>();
+            Dictionary<Type, NetworkId> networkIds = new();
 
-        //     foreach (var rpc in rpcObjs) {
-        //         var type = rpc.GetType();
-        //         if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(IRpcObject<>)) {
-        //             type.GetProperty("Rpc").GetValue(rpc)
+            var rpcObjs = prefab.GetComponents<IBaseRpcObject>();
+            foreach (var rpcObj in rpcObjs) {
+                var objType = rpcObj.GetType();
+                if (objType.IsGenericMethodParameter && objType.GetGenericTypeDefinition() == typeof(IRpcObject<>)) {
+                    var newId = Network.Instance.AllocateNetworkId(rpcObj);
 
-        //             var instType = typeof(RemoteRpcInstance<>).MakeGenericType(type.GetGenericArguments()[0]);
-        //             var inst = prefab.AddComponent(instType);
-        //             instType.GetMethod("Init").Invoke(inst, new object[] { prefabKey,  })
-        //         }
-        //     }
+                    var genericType = objType.GetGenericArguments()[0];
 
-        //     var obj = GameObject.Instantiate(prefab);
+                    networkIds.Add(genericType, newId);
 
+                    var instanceType = typeof(RpcInstance<>).MakeGenericType(genericType);
+                    var instance = prefab.AddComponent(instanceType) as IRpcInstance;
 
-        //     // send signal
+                    if (initArgs.TryGet(genericType, out var args)) {
+                        instance.Init(true, prefabKey, newId, args);
+                    } else {
+                        throw new InvalidOperationException();
+                    }
+                }
+            }
 
+            Network.Instance.InstantiateRpcObject(prefabKey, target, new RpcInstantiationData(networkIds, initArgs),
+                _ => callback(), option);
 
-
-        //     return;
-        // }
+            return GameObject.Instantiate(prefab);
+        }
     }
 
     public class RpcFeature<T> : MonoBehaviour where T : MonoBehaviour, IRpcObject<T> {
         internal T _component { get; private set; }
         public NetworkId networkId { get; private set; }
+        public bool isLocal { get; private set; }
 
-        internal Type _instanceType => typeof(RemoteRpcInstance<T>);
-
-        private void Init(T component) {
+        private void Init(T component, Delegate initializer) {
             _component = component;
 
-            if (component.gameObject.TryGetComponent<RemoteRpcInstance<T>>(out var inst)) {
+            if (component.gameObject.TryGetComponent<RpcInstance<T>>(out var inst)) {
                 networkId = inst.networkId;
+                isLocal = inst.isLocal;
+                if (initializer != null) {
+                    var method = initializer.GetMethodInfo();
+                    method.Invoke(component, inst.initArgs);
+                }
                 Network.Instance.RegisterNetworkId(networkId, component);
             }
             else {
-                networkId = Network.Instance.AllocateNetworkId(component);
+                throw new InvalidOperationException();
             }
         }
 
@@ -159,12 +190,12 @@ namespace LiteP2PNet {
             Network.Instance.ReleaseNetworkId(networkId);
         }
 
-        public static RpcFeature<T> Configure(T component) {
+        public static RpcFeature<T> Configure(T component, Delegate initializer = null) {
             var gameObject = component.gameObject;
 
             if (!gameObject.TryGetComponent<RpcFeature<T>>(out var feature)) {
                 feature = gameObject.AddComponent<RpcFeature<T>>();
-                feature.Init(component);
+                feature.Init(component, initializer);
             }
 
             return feature;
@@ -235,7 +266,7 @@ namespace LiteP2PNet {
     public interface IBaseRpcObject {}
 
     public interface IRpcObject<T> : IBaseRpcObject where T : MonoBehaviour, IRpcObject<T> {
-        public RpcFeature<T> Rpc { get; protected set; }
+        public RpcFeature<T> Rpc { get; protected set; }   
     }
 
     public struct RpcTarget {
@@ -253,6 +284,18 @@ namespace LiteP2PNet {
             _all = false;
             _owner = false;
             _self = false;
+        }
+    }
+
+    public struct RpcInstantiationTarget {
+        public string[] targets;
+        internal bool _all;
+
+        public static RpcInstantiationTarget All = new() { _all = true };
+
+        public RpcInstantiationTarget(params string[] targets) {
+            this.targets = targets;
+            _all = false;
         }
     }
 

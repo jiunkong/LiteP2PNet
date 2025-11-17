@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using MessagePack;
 
 /**
@@ -94,5 +96,41 @@ namespace LiteP2PNet {
         public string[] urls;
         public string username;
         public string credential;
+    }
+
+    [MessagePackObject]
+    public class RpcInstantiationData {
+        [Key(0)]
+        Dictionary<TypeWrapper, (TypeWrapper, byte[])[]> initArgs = new();
+        [Key(1)]
+        Dictionary<TypeWrapper, NetworkId> networkIds = new();
+
+        public RpcInstantiationData(Dictionary<Type, NetworkId> networkIds, RpcInitArgs args) {
+            this.networkIds = networkIds.ToDictionary(x => new TypeWrapper(x.Key), x => x.Value);
+
+            foreach(var key in args.initArgs.Keys) {
+                var keyWrapper = new TypeWrapper(key);
+                var argsWrapper = args.initArgs[key].Select(
+                    x => {
+                        var t = x.GetType();
+                        return (new TypeWrapper(t), MessagePackSerializer.Serialize(t, x));
+                    }
+                ).ToArray();
+                initArgs[keyWrapper] = argsWrapper;
+            }
+        }
+
+        public RpcInitArgs GetRpcInitArgs() {
+            var result = new RpcInitArgs();
+            foreach(var key in initArgs.Keys) {
+                var args = initArgs[key].Select(
+                    x => MessagePackSerializer.Deserialize(x.Item1.Type, x.Item2)
+                );
+                result.Add(key.Type, args.ToArray());
+            }
+            return result;
+        }
+
+        public Dictionary<Type, NetworkId> GetNetworkIds() => networkIds.ToDictionary(x => x.Key.Type, x => x.Value);
     }
 }

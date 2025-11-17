@@ -883,7 +883,33 @@ namespace LiteP2PNet {
                 }
             }
             else if (rpcType == RpcType.Instantiate) {
-                
+                var requestId = Utils.ParseData<uint>(ref offset, rawdata);
+
+                var prefabKey = Utils.ParseData<string>(ref offset, rawdata);
+                var instData = Utils.ParseData<RpcInstantiationData>(ref offset, rawdata);
+
+                var networkIds = instData.GetNetworkIds();
+                var initArgs = instData.GetRpcInitArgs();
+
+                var prefab = RpcFeature.LoadPrefab(prefabKey);
+
+                var rpcObjs = prefab.GetComponents<IBaseRpcObject>();
+                foreach (var rpcObj in rpcObjs) {
+                    var objType = rpcObj.GetType();
+                    if (objType.IsGenericMethodParameter && objType.GetGenericTypeDefinition() == typeof(IRpcObject<>)) {
+                        var genericType = objType.GetGenericArguments()[0];
+                        var networkId = networkIds[genericType];
+
+                        var instanceType = typeof(RpcInstance<>).MakeGenericType(genericType);
+                        var instance = prefab.AddComponent(instanceType) as IRpcInstance;
+
+                        if (initArgs.TryGet(genericType, out var args)) {
+                            instance.Init(false, prefabKey, networkId, args);
+                        } else {
+                            throw new InvalidOperationException();
+                        }
+                    }
+                }
             }
             else if (rpcType == RpcType.Destroy) {
 
@@ -1077,31 +1103,32 @@ namespace LiteP2PNet {
 
         #region RPC Instantiate
 
-        // internal bool InstantiateRpcObject(string prefabKey, RpcTarget target, Action<object> callback, SendOption option) {
-        //     byte prefix = 0;
-        //     prefix &= (byte)DataType.RPC << 6;
-        //     prefix &= (byte)((byte)option << 4);
-        //     prefix &= (byte)RpcType.Instantiate;
+        internal bool InstantiateRpcObject(string prefabKey, RpcInstantiationTarget target, RpcInstantiationData instData, Action<object> callback, SendOption option) {
+            var targets = target.targets.Except(new[] { _userId });
+            if (target._all) targets = Members.Except(new[] { _userId });
 
-        //     List<byte> _data = new() { prefix };
+            if (targets.Count() == 0) return true;
 
-        //     var requestId = _networkIdRegistry.AllocateRequestId(callback);
-        //     Utils.AppendData(ref _data, requestId);
+            byte prefix = 0;
+            prefix &= (byte)DataType.RPC << 6;
+            prefix &= (byte)((byte)option << 4);
+            prefix &= (byte)RpcType.Instantiate;
 
-        //     Utils.AppendData(ref _data, networkId);
+            List<byte> _data = new() { prefix };
 
-        //     Utils.AppendData(ref _data, rpcCall.methodId);
+            var requestId = _networkIdRegistry.AllocateRequestId(callback);
+            Utils.AppendData(ref _data, requestId);
 
-        //     foreach (var arg in rpcCall.parameters) {
-        //         var type = arg.GetType();
-        //         var typewrapper = new TypeWrapper(type);
-        //         Utils.AppendData(ref _data, typewrapper);
+            Utils.AppendData(ref _data, prefabKey);
+            Utils.AppendData(ref _data, instData);
 
-        //         Utils.AppendData(ref _data, arg);
-        //     }
+            bool result = true;
+            foreach (var userId in targets) {
+                result &= SendData(userId, _data, option);
+            }
 
-        //     return SendNonStaticRpcByTarget(networkId, target, _data, option);
-        // }
+            return result;
+        }
 
         #endregion
 
