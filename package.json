@@ -1,6 +1,6 @@
 {
     "name": "dev.jiunkong.litep2pnet",
-    "version": "1.0.7",
+    "version": "1.0.8",
     "description": "A lightweight P2P networking library for Unity",
     "displayName": "LiteP2PNet",
     "unity": "6000.0",
