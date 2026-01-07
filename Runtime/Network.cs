@@ -168,6 +168,8 @@ namespace LiteP2PNet {
         }
 
         public IEnumerator JoinLobby(string lobbyId, Dictionary<string, string> headers, string userIdKey = "userId", string lobbyIdKey = "lobbyId", float timeout = 10f) {
+            if (headers == null) headers = new();
+
             headers.Add(userIdKey, _userId);
             headers.Add(lobbyIdKey, lobbyId);
             _signaling = new WebSocket(_serverUrl, headers);
