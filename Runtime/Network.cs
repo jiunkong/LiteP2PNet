@@ -273,7 +273,7 @@ namespace LiteP2PNet {
                 case "init": {
                         Host = lobbyUpdateData.hostId;
                         var mem = lobbyUpdateData.members.ToList();
-                        if (!mem.Contains(_userId)) mem.Add(_userId);
+                        if (Host != _userId && !mem.Contains(_userId)) mem.Add(_userId);
                         Members = mem.ToArray();
 
                         if (Host != _userId) StartCoroutine(ConnectPeerAsync(Host));
@@ -306,7 +306,6 @@ namespace LiteP2PNet {
         private void DisconnectPeer(string peerId) {
             if (_peerConnectionMap.TryGetValue(peerId, out var connection)) {
                 if (connection.ConnectionState != RTCPeerConnectionState.Closed) {
-                    _dataChannelListMap[peerId][4].Send(new byte[] { 1 });
                     connection.Close();
                 }
                 connection.Dispose();
@@ -320,7 +319,8 @@ namespace LiteP2PNet {
         }
 
         private void DisconnectAll() {
-            foreach (var peerId in _peerConnectionMap.Keys) {
+            var keys = _peerConnectionMap.Keys.ToList();
+            foreach (var peerId in keys) {
                 DisconnectPeer(peerId);
             }
         }
@@ -341,15 +341,10 @@ namespace LiteP2PNet {
                     connection.CreateDataChannel("OrderedUnreliable", new RTCDataChannelInit { ordered = true, maxRetransmits = 0 }),
                     connection.CreateDataChannel("UnorderedReliable", new RTCDataChannelInit { ordered = false }),
                     connection.CreateDataChannel("UnorderedUnreliable", new RTCDataChannelInit { ordered = false, maxRetransmits = 0 }),
-                    connection.CreateDataChannel("disconnect", new RTCDataChannelInit())
                 };
 
                 foreach (var channel in channels) {
-                    if (channel.Label == "disconnect") channel.OnMessage += (rawdata) => { 
-                        if (_debugLog) Debug.Log($"Received disconnect signal from {peerId}. Disconnecting...");
-                        DisconnectPeer(peerId);
-                    };
-                    else channel.OnMessage += (rawdata) => {
+                    channel.OnMessage += (rawdata) => {
                         HandleDataChannel(rawdata);
                     };
                 }
@@ -402,11 +397,7 @@ namespace LiteP2PNet {
                     _dataChannelListMap.Add(peerId, new() { null, null, null, null });
                 }
 
-                if (channel.Label == "disconnect") channel.OnMessage += (rawdata) => {
-                    if (_debugLog) Debug.Log($"Received disconnect signal from {peerId}. Disconnecting...");
-                    DisconnectPeer(peerId);
-                };
-                else channel.OnMessage += (rawdata) => HandleDataChannel(rawdata);
+                channel.OnMessage += (rawdata) => HandleDataChannel(rawdata);
 
                 var channelList = _dataChannelListMap[peerId];
                 switch (channel.Label) {
