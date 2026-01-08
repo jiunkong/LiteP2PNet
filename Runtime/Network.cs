@@ -118,14 +118,16 @@ namespace LiteP2PNet {
             return await task.Task;
         }
 
-        public void Init(string serverUrl, string userId, StunServer[] stunServers = null, TurnServer[] turnServers = null, bool debugLog = false) {
+        public void Init(string serverUrl, string userId, bool debugLog = false) {
             if (userId.Length > 256) throw new Exception("User ID must be less than 256 characters");
 
             _userId = userId;
             _serverUrl = serverUrl;
             IsConnectedToServer = false;
-            _debugLog = debugLog;
+            _debugLog = debugLog;   
+        }
 
+        public void SetServers(StunServer[] stunServers = null, TurnServer[] turnServers = null) {
             if (stunServers != null) {
                 foreach (var stun in stunServers) {
                     _iceServers.Add(new RTCIceServer { urls = stun.urls });
@@ -137,7 +139,8 @@ namespace LiteP2PNet {
                     _iceServers.Add(new RTCIceServer {
                         urls = turn.urls,
                         username = turn.username,
-                        credential = turn.credential
+                        credential = turn.credential,
+                        credentialType = RTCIceCredentialType.Password
                     });
                 }
             }
