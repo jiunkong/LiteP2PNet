@@ -33,6 +33,14 @@ namespace LiteP2PNet {
         public string Host { get; private set; }
         public bool IsHost => Host == _userId;
         public string[] Members { get; private set; }
+        public IEnumerable<string> Participants {
+            get
+            {
+                yield return Host;
+                foreach (var m in Members)
+                    yield return m;
+            }
+        }
         public string[] Peers => _peerConnectionMap.Keys.ToArray();
 
         private WebSocket _signaling;
@@ -47,6 +55,7 @@ namespace LiteP2PNet {
         public Action<string, string> OnHostChanged = null;
         public Action<string> OnPeerConnected = null;
         public Action<string> OnPeerDisconnected = null;
+        public Action<string> OnPeerConnectionFailed = null;
 
         private string _userId;
         private string _serverUrl;
@@ -386,6 +395,10 @@ namespace LiteP2PNet {
                         DisconnectPeer(peerId);
                         isConnected = false;
                         OnPeerDisconnected?.Invoke(peerId);
+                        break;
+                    case RTCIceConnectionState.Failed:
+                        LeaveLobby();
+                        OnPeerConnectionFailed?.Invoke(peerId);
                         break;
                 }
             };
