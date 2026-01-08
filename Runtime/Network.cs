@@ -204,6 +204,7 @@ namespace LiteP2PNet {
         }
 
         public void LeaveLobby() {
+            DisconnectAll();
             _signaling.Close();
             _signaling = null;
         }
@@ -257,7 +258,7 @@ namespace LiteP2PNet {
                         break;
                     }
                 case "leave": {
-                        if (Host != lobbyUpdateData.hostId && Host != _userId) {
+                        if (Host != lobbyUpdateData.hostId && lobbyUpdateData.hostId != _userId) {
                             // Reconnect
                             DisconnectPeer(Host);
                             StartCoroutine(ConnectPeerAsync(lobbyUpdateData.hostId));
@@ -316,6 +317,12 @@ namespace LiteP2PNet {
             _isDescriptionReadyMap.Remove(peerId);
             _dataChannelListMap.Remove(peerId);
             _handlerMap.Remove(peerId);
+        }
+
+        private void DisconnectAll() {
+            foreach (var peerId in _peerConnectionMap.Keys) {
+                DisconnectPeer(peerId);
+            }
         }
 
         private void SetupPeerConnection(string peerId, bool isOfferer) {
