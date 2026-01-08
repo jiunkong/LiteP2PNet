@@ -312,7 +312,10 @@ namespace LiteP2PNet {
         }
 
         private void SetupPeerConnection(string peerId, bool isOfferer) {
-            var config = new RTCConfiguration { iceServers = _iceServers.ToArray() };
+            var config = new RTCConfiguration { 
+                iceTransportPolicy = RTCIceTransportPolicy.All,
+                iceServers = _iceServers.ToArray()
+            };
 
             var connection = new RTCPeerConnection(ref config);
 
