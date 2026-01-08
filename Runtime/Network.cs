@@ -397,7 +397,7 @@ namespace LiteP2PNet {
                         OnPeerDisconnected?.Invoke(peerId);
                         break;
                     case RTCIceConnectionState.Failed:
-                        LeaveLobby();
+                        if (!IsHost) LeaveLobby();
                         OnPeerConnectionFailed?.Invoke(peerId);
                         break;
                 }
