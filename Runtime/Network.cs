@@ -271,7 +271,9 @@ namespace LiteP2PNet {
                     }
                 case "init": {
                         Host = lobbyUpdateData.hostId;
-                        Members = lobbyUpdateData.members;
+                        var mem = lobbyUpdateData.members.ToList();
+                        if (!mem.Contains(_userId)) mem.Add(_userId);
+                        Members = mem.ToArray();
 
                         if (Host != _userId) StartCoroutine(ConnectPeerAsync(Host));
 
@@ -463,8 +465,8 @@ namespace LiteP2PNet {
             var connection = _peerConnectionMap[message.from];
             yield return connection.SetRemoteDescription(ref answer);
 
-            ProcessQueuedRemoteIceCandidates(message.from);
             _isDescriptionReadyMap[message.from] = true;
+            ProcessQueuedRemoteIceCandidates(message.from);
         }
 
         private void HandleIceCandidate(SignalingMessage message) {
