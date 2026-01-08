@@ -270,7 +270,7 @@ namespace LiteP2PNet {
                         Host = lobbyUpdateData.hostId;
                         Members = lobbyUpdateData.members;
 
-                        StartCoroutine(ConnectPeerAsync(Host));
+                        if (Host != _userId) StartCoroutine(ConnectPeerAsync(Host));
 
                         break;
                     }
