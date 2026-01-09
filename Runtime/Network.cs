@@ -358,12 +358,12 @@ namespace LiteP2PNet {
                     };
                 }
 
-                _dataChannelListMap.Add(peerId, channels);
+                _dataChannelListMap[peerId] = channels;
             }
 
             if (_debugLog) Debug.Log($"Created peer connection for {peerId}");
 
-            _myIceCandidatesMap.Add(peerId, new());
+            _myIceCandidatesMap[peerId] = new();
 
             connection.OnIceCandidate = candidate => {
                 if (candidate != null) {
@@ -407,7 +407,7 @@ namespace LiteP2PNet {
                 if (_debugLog) Debug.Log($"New data channel for {peerId}: {channel.Label}");
 
                 if (!_dataChannelListMap.ContainsKey(peerId)) {
-                    _dataChannelListMap.Add(peerId, new() { null, null, null, null });
+                    _dataChannelListMap[peerId] = new() { null, null, null, null };
                 }
 
                 channel.OnMessage += (rawdata) => HandleDataChannel(rawdata);
@@ -429,7 +429,7 @@ namespace LiteP2PNet {
                 }
             };
 
-            _peerConnectionMap.Add(peerId, connection);
+            _peerConnectionMap[peerId] = connection;
         }
 
         private IEnumerator HandleOffer(SignalingMessage message)
