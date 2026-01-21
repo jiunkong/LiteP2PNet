@@ -286,8 +286,9 @@ namespace LiteP2PNet {
                         if (Host != _userId && !mem.Contains(_userId)) mem.Add(_userId);
                         Members = mem.ToArray();
 
-                        if (Host == _userId) OnLobbyInitialized?.Invoke();
-                        else if (Host != _userId) StartCoroutine(ConnectPeerAsync(Host));
+                        if (Host != _userId) StartCoroutine(ConnectPeerAsync(Host));
+
+                        OnLobbyInitialized?.Invoke();
 
                         break;
                     }
