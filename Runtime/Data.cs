@@ -1,13 +1,33 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.Serialization;
 using MessagePack;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Converters;
+using UnityEditor.UI;
 
 /**
 [DataType(2), SendOption(2), None(4)] [Data]
 **/
 
 namespace LiteP2PNet {
+    [JsonConverter(typeof(StringEnumConverter))]
+    public enum ConnectionFailedReason {
+        IceConnectionFailed,
+
+        [EnumMember(Value = "USER_NOT_FOUND")]
+        UserNotFound,
+        [EnumMember(Value = "LOBBY_NOT_FOUND")]
+        LobbyNotFound,
+        [EnumMember(Value = "LOBBY_FULL")]
+        LobbyIsFull,
+        [EnumMember(Value = "HOST_NOT_FOUND")]
+        HostNotFound,     
+        [EnumMember(Value = "BAD_CONNECTION")]
+        BadConnection,
+    }
+
     public enum SendOption : byte {
         OrderedReliable = 0b00,
         OrderedUnreliable = 0b01,
@@ -53,9 +73,28 @@ namespace LiteP2PNet {
         public string receiver;
     }
 
+    [JsonConverter(typeof(StringEnumConverter))]
+    internal enum SignalingMsgType {
+        [EnumMember(Value = "offer")]
+        Offer,
+        [EnumMember(Value = "answer")]
+        Answer,
+        [EnumMember(Value = "ice-candidate")]
+        IceCandidate,
+        [EnumMember(Value = "lobby-update")]
+        LobbyUpdate,
+        [EnumMember(Value = "connection-failed")]
+        ConnectionFailed,
+        [EnumMember(Value = "request-data")]
+        RequestData,
+        [EnumMember(Value = "response-data")]
+        ResponseData,
+        [EnumMember(Value = "apply-data")]
+        ApplyData
+    }
     [Serializable]
     internal class SignalingMessage {
-        public string type;
+        public SignalingMsgType type;
         public string from;
         public string to;
         public string body;
@@ -75,11 +114,44 @@ namespace LiteP2PNet {
     }
 
     [Serializable]
-    internal class LobbyUpdateData {
+    internal class LobbyUpdateDTO {
         public string type;
         public string target;
-        public string hostId;
-        public string[] members;
+        public string lobby;
+    }
+
+    [Serializable]
+    internal class ConnectionFailedDTO {
+        public ConnectionFailedReason reason;
+    }
+
+    [Serializable]
+    internal class DataRequestDTO {
+        public string type;
+        public string target;
+    }
+
+    [Serializable]
+    internal class DataResponseDTO {
+        public string type;
+        public string target;
+        public bool success;
+        public string data;
+    }
+
+    [Serializable]
+    internal class DataApplyDTO {
+        public string type;
+        public string target;
+        public string data;
+    }
+
+    [Serializable]
+    internal class LobbyMetadataUpdateDTO {
+        public string name;
+        public int? maxPlayers;
+        public bool? isPrivate;
+        public bool? isPlaying;
     }
 
     public struct StunServer {

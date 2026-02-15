@@ -2,7 +2,7 @@ using System;
 using System.Linq;
 using System.Reflection;
 using System.Text;
-using UnityEngine;
+using Newtonsoft.Json;
 
 namespace LiteP2PNet {
     public interface IPacketSerializer {
@@ -10,15 +10,15 @@ namespace LiteP2PNet {
         public object Deserialize(byte[] bytes, Type type);
     }
 
-    public class JsonUtilityPacketSerializer : IPacketSerializer {
+    public class JsonPacketSerializer : IPacketSerializer {
 
         public object Deserialize(byte[] bytes, Type type) {
             string json = Encoding.UTF8.GetString(bytes);
-            return JsonUtility.FromJson(json, type);
+            return JsonConvert.DeserializeObject(json, type);
         }
 
         public byte[] Serialize(object obj, Type type) {
-            string json = JsonUtility.ToJson(obj);
+            string json = JsonConvert.SerializeObject(obj);
             return Encoding.UTF8.GetBytes(json);
         }
     }

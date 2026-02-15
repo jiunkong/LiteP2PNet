@@ -9,7 +9,10 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Linq;
 using MessagePack;
+using Newtonsoft.Json;
 using UnityEditor;
+using System.IO;
+using UnityEngine.Networking;
 
 namespace LiteP2PNet {
     public class Network : MonoBehaviour {
@@ -30,10 +33,14 @@ namespace LiteP2PNet {
             }
         }
 
-        public string Host { get; private set; }
-        public bool IsHost => Host == _userId;
-        public string[] Members { get; private set; }
-        public IEnumerable<string> Participants {
+        public IUserService UserService;
+        public ILobbyService LobbyService;
+
+        public ILobby Lobby { get; private set; }
+        public IUser Host => Lobby.host;
+        public bool IsHost => Host.id == User.id;
+        public IReadOnlyList<IUser> Members => Lobby.members;
+        public IEnumerable<IUser> Participants {
             get
             {
                 yield return Host;
@@ -55,11 +62,11 @@ namespace LiteP2PNet {
         public Action<string, string> OnHostChanged = null;
         public Action<string> OnPeerConnected = null;
         public Action<string> OnPeerDisconnected = null;
-        public Action<string> OnPeerConnectionFailed = null;
+        public Action<ConnectionFailedReason> OnConnectionFailed = null;
         public Action OnLobbyInitialized = null;
 
-        private string _userId;
-        private string _serverUrl;
+        public IUser User { get; private set; }
+        private string _socketUrl, _apiUrl;
 
         private List<RTCIceServer> _iceServers = new();
 
@@ -76,7 +83,7 @@ namespace LiteP2PNet {
             public Dictionary<(string, Delegate), Action<string, long, object, SendOption?>> packetHandlerCache = new();
         }
 
-        private static IPacketSerializer _packetSerializer = new JsonUtilityPacketSerializer();
+        private static IPacketSerializer _packetSerializer = new JsonPacketSerializer();
 
         private Dictionary<string, HandlerGroup> _handlerMap = new();
 
@@ -87,8 +94,8 @@ namespace LiteP2PNet {
         public void ReleaseNetworkId(NetworkId networkId) => _networkIdRegistry.ReleaseNetworkId(networkId);
 
         #region Packet Serialization
-        public static void UseJsonUtilityPacketSerializer() {
-            _packetSerializer = new JsonUtilityPacketSerializer();
+        public static void UseJsonPacketSerializer() {
+            _packetSerializer = new JsonPacketSerializer();
         }
 
         public static void UseCustomPacketSerializer(IPacketSerializer serializer) {
@@ -128,13 +135,53 @@ namespace LiteP2PNet {
             return await task.Task;
         }
 
-        public void Init(string serverUrl, string userId, bool debugLog = false) {
+        public void Init<TLobbyState, TUserProfile, TAccountState>(string serverUrl, string userId, TUserProfile userProfile, bool useHttps = false, bool useWss = false, bool debugLog = false, Action onUserSynced = null)
+            where TLobbyState : class where TUserProfile : class where TAccountState : class {
+
             if (userId.Length > 256) throw new Exception("User ID must be less than 256 characters");
 
-            _userId = userId;
-            _serverUrl = serverUrl;
+            User = new User<TUserProfile, TAccountState> {
+                id = userId,
+                profile = userProfile
+            };
+
+            if (string.IsNullOrEmpty(serverUrl))
+                throw new InvalidDataException("Invalid server URL");
+
+            int index = serverUrl.IndexOf("://", StringComparison.Ordinal);
+            serverUrl = index >= 0 ? serverUrl[(index + 3)..] : serverUrl;
+
+            if (serverUrl.EndsWith("/") && serverUrl.Length > 1)
+            serverUrl = serverUrl[..^1];
+
+            _socketUrl = (useWss ? "wss://" : "ws://") + serverUrl;
+            _apiUrl = (useHttps ? "https://" : "http://") + serverUrl;
+
             IsConnectedToServer = false;
-            _debugLog = debugLog;   
+            _debugLog = debugLog;
+
+            UserService = new UserService<TUserProfile, TAccountState>(this);
+            LobbyService = new LobbyService<TLobbyState>(this);
+
+            StartCoroutine(SyncUser<TUserProfile, TAccountState>(onUserSynced));
+        }
+
+        private IEnumerator SyncUser<TUserProfile, TAccountState>(Action onUserSynced = null) where TUserProfile : class where TAccountState : class {
+            if (!User.TryCast<TUserProfile, TAccountState>(out var user)) yield break;
+
+            string profile = JsonConvert.SerializeObject(user.profile);
+            byte[] body = Encoding.UTF8.GetBytes(profile);
+
+            var request = new UnityWebRequest($"{_apiUrl}/user/sync/{User.id}", "PATCH", new DownloadHandlerBuffer(), new UploadHandlerRaw(body));
+            request.SetRequestHeader("Content-Type", "application/json");
+
+            yield return request.SendWebRequest();
+            if (request.result == UnityWebRequest.Result.Success) {
+                (User as User<TUserProfile, TAccountState>).account = JsonConvert.DeserializeObject<TAccountState>(request.downloadHandler.text);
+                onUserSynced?.Invoke();
+            } else {
+                Debug.LogError($"User Sync Failed: {request.error}");
+            }
         }
 
         public void SetServers(StunServer[] stunServers = null, TurnServer[] turnServers = null) {
@@ -175,17 +222,17 @@ namespace LiteP2PNet {
 
             _signaling.OnMessage += (bytes) => {
                 var message = Encoding.UTF8.GetString(bytes);
-                var signalingMessage = JsonUtility.FromJson<SignalingMessage>(message);
+                var signalingMessage = JsonConvert.DeserializeObject<SignalingMessage>(message);
                 _incomingMessageQueue.Enqueue(signalingMessage);
             };
         }
 
-        public IEnumerator JoinLobby(string lobbyId, Dictionary<string, string> headers, string userIdKey = "userId", string lobbyIdKey = "lobbyId", float timeout = 10f) {
+        public IEnumerator JoinLobby(ILobby lobby, Dictionary<string, string> headers, string userIdKey = "userId", string lobbyIdKey = "lobbyId", float timeout = 10f) {
             if (headers == null) headers = new();
 
-            headers.Add(userIdKey, _userId);
-            headers.Add(lobbyIdKey, lobbyId);
-            _signaling = new WebSocket(_serverUrl, headers);
+            headers.Add(userIdKey, User.id);
+            headers.Add(lobbyIdKey, lobby.id);
+            _signaling = new WebSocket(_socketUrl, headers);
 
             _dataChannelListMap = new();
             _handlerMap = new();
@@ -195,7 +242,7 @@ namespace LiteP2PNet {
             _remoteIceCandidatesMap = new();
             _incomingMessageQueue = new();
 
-            _networkIdRegistry = new NetworkIdRegistry(_userId);
+            _networkIdRegistry = new NetworkIdRegistry(User.id);
 
             SetupSignaling();
 
@@ -219,18 +266,18 @@ namespace LiteP2PNet {
             _signaling = null;
         }
 
-        private void SendSignalingMessage(string type, string to, object data) {
+        internal void SendSignalingMessage(SignalingMsgType type, string to, object data) {
             if (!IsConnectedToServer) return;
             try {
-                string json = JsonUtility.ToJson(data);
+                string json = JsonConvert.SerializeObject(data);
                 var message = new SignalingMessage {
                     type = type,
-                    from = _userId,
+                    from = User.id,
                     to = to,
                     body = json
                 };
 
-                _signaling.SendText(JsonUtility.ToJson(message));
+                _signaling.SendText(JsonConvert.SerializeObject(message));
             }
             catch (Exception ex) {
                 throw new Exception("Failed to send signaling message", ex);
@@ -239,17 +286,34 @@ namespace LiteP2PNet {
 
         private IEnumerator HandleSignalingMessage(SignalingMessage message) {
             switch (message.type) {
-                case "offer":
+                case SignalingMsgType.Offer:
                     yield return HandleOffer(message);
                     break;
-                case "answer":
+                case SignalingMsgType.Answer:
                     yield return HandleAnswer(message);
                     break;
-                case "ice-candidate":
+                case SignalingMsgType.IceCandidate:
                     HandleIceCandidate(message);
                     break;
-                case "lobby-update":
+                case SignalingMsgType.LobbyUpdate:
                     HandleLobbyUpdate(message);
+                    break;
+                case SignalingMsgType.ConnectionFailed:
+                    var dto = JsonConvert.DeserializeObject<ConnectionFailedDTO>(message.body);
+                    OnConnectionFailed?.Invoke(dto.reason);
+
+                    LeaveLobby();
+
+                    break;
+                case SignalingMsgType.ResponseData:
+                    var res = JsonConvert.DeserializeObject<DataResponseDTO>(message.body);
+                    if (!res.success) break;
+
+                    if (res.type == "user") {
+                        (UserService as IUserServiceInternal).HandleFetchResponse(res);
+                    } else if (res.type == "lobby") {
+                        (LobbyService as ILobbyServiceInternal).HandleFetchResponse(res);
+                    }
                     break;
                 default:
                     if (_debugLog) Debug.LogWarning($"Unknown signaling message type: {message.type}");
@@ -258,35 +322,31 @@ namespace LiteP2PNet {
         }
 
         private void HandleLobbyUpdate(SignalingMessage message) {
-            var lobbyUpdateData = JsonUtility.FromJson<LobbyUpdateData>(message.body);
+            var lobbyUpdateData = JsonConvert.DeserializeObject<LobbyUpdateDTO>(message.body);
+            ILobby lobby = (LobbyService as ILobbyServiceInternal).Deserialize(lobbyUpdateData.lobby);
 
             switch (lobbyUpdateData.type) {
                 case "join": {
-                        Host = lobbyUpdateData.hostId;
-                        Members = lobbyUpdateData.members;
+                        Lobby = lobby;
                         OnUserJoined?.Invoke(lobbyUpdateData.target);
                         break;
                     }
                 case "leave": {
-                        if (Host != lobbyUpdateData.hostId && lobbyUpdateData.hostId != _userId) {
+                        if (Host.id != lobby.hostId && lobby.hostId != User.id) {
                             // Reconnect
-                            DisconnectPeer(Host);
-                            StartCoroutine(ConnectPeerAsync(lobbyUpdateData.hostId));
-                            OnHostChanged?.Invoke(Host, lobbyUpdateData.hostId);
+                            DisconnectPeer(Host.id);
+                            StartCoroutine(ConnectPeerAsync(lobby.hostId));
+                            OnHostChanged?.Invoke(Host.id, lobby.hostId);
                         }
 
-                        Host = lobbyUpdateData.hostId;
-                        Members = lobbyUpdateData.members;
+                        Lobby = lobby;
                         OnUserLeft?.Invoke(lobbyUpdateData.target);
                         break;
                     }
                 case "init": {
-                        Host = lobbyUpdateData.hostId;
-                        var mem = lobbyUpdateData.members.ToList();
-                        if (Host != _userId && !mem.Contains(_userId)) mem.Add(_userId);
-                        Members = mem.ToArray();
+                        Lobby = lobby;
 
-                        if (Host != _userId) StartCoroutine(ConnectPeerAsync(Host));
+                        if (Host.id != User.id) StartCoroutine(ConnectPeerAsync(Host.id));
 
                         OnLobbyInitialized?.Invoke();
 
@@ -307,7 +367,7 @@ namespace LiteP2PNet {
             var offerDesc = offerOp.Desc;
             connection.SetLocalDescription(ref offerDesc);
 
-            SendSignalingMessage("offer", peerId, new OfferAnswerData {
+            SendSignalingMessage(SignalingMsgType.Offer, peerId, new OfferAnswerData {
                 sdp = offerDesc.sdp,
                 type = offerDesc.type.ToString().ToLower()
             });
@@ -375,7 +435,7 @@ namespace LiteP2PNet {
                     }
                     if (_debugLog) Debug.Log($"New Local ICE candidate for {peerId}: {candidate.Candidate}");
 
-                    SendSignalingMessage("ice-candidate", peerId, new IceCandidateData {
+                    SendSignalingMessage(SignalingMsgType.IceCandidate, peerId, new IceCandidateData {
                         candidate = candidate.Candidate,
                         sdpMid = candidate.SdpMid,
                         sdpMLineIndex = new NullableInt(candidate.SdpMLineIndex)
@@ -400,8 +460,10 @@ namespace LiteP2PNet {
                         OnPeerDisconnected?.Invoke(peerId);
                         break;
                     case RTCIceConnectionState.Failed:
-                        if (!IsHost) LeaveLobby();
-                        OnPeerConnectionFailed?.Invoke(peerId);
+                        if (!IsHost) {
+                            LeaveLobby();
+                            OnConnectionFailed?.Invoke(ConnectionFailedReason.IceConnectionFailed);
+                        }
                         break;
                 }
             };
@@ -439,7 +501,7 @@ namespace LiteP2PNet {
         {
             SetupPeerConnection(message.from, false);
 
-            var offerData = JsonUtility.FromJson<OfferAnswerData>(message.body);
+            var offerData = JsonConvert.DeserializeObject<OfferAnswerData>(message.body);
             var offer = new RTCSessionDescription
             {
                 type = RTCSdpType.Offer,
@@ -457,7 +519,7 @@ namespace LiteP2PNet {
             ProcessQueuedRemoteIceCandidates(message.from);
             _isDescriptionReadyMap[message.from] = true;
 
-            SendSignalingMessage("answer", message.from, new OfferAnswerData {
+            SendSignalingMessage(SignalingMsgType.Answer, message.from, new OfferAnswerData {
                 sdp = answerDesc.sdp,
                 type = answerDesc.type.ToString().ToLower()
             });
@@ -480,7 +542,7 @@ namespace LiteP2PNet {
 
         private IEnumerator HandleAnswer(SignalingMessage message)
         {
-            var answerData = JsonUtility.FromJson<OfferAnswerData>(message.body);
+            var answerData = JsonConvert.DeserializeObject<OfferAnswerData>(message.body);
             var answer = new RTCSessionDescription
             {
                 type = RTCSdpType.Answer,
@@ -495,7 +557,7 @@ namespace LiteP2PNet {
         }
 
         private void HandleIceCandidate(SignalingMessage message) {
-            var candidateData = JsonUtility.FromJson<IceCandidateData>(message.body);
+            var candidateData = JsonConvert.DeserializeObject<IceCandidateData>(message.body);
             var candidate = new RTCIceCandidate(new RTCIceCandidateInit {
                 candidate = candidateData.candidate,
                 sdpMid = candidateData.sdpMid,
@@ -540,7 +602,7 @@ namespace LiteP2PNet {
                     break;
             }
 
-            if (endpoint.receiver != _userId) {
+            if (endpoint.receiver != User.id) {
                 // Transfer data to destination if host
                 if (IsHost && _dataChannelListMap.TryGetValue(endpoint.receiver, out var channels)) {
                     var channel = channels[(byte)option];
@@ -593,9 +655,9 @@ namespace LiteP2PNet {
 
         #region Send
         private bool SendData(string userId, List<byte> data, SendOption option) {
-            if (userId == _userId) return false;
+            if (userId == User.id) return false;
 
-            string destination = IsHost ? userId : Host;
+            string destination = IsHost ? userId : Host.id;
             if (!_dataChannelListMap.TryGetValue(destination, out var channels)) return false;
 
             var channel = channels[(byte)option];
@@ -605,7 +667,7 @@ namespace LiteP2PNet {
             }
 
             var endpoint = new DataEndPoint() {
-                sender = _userId,
+                sender = User.id,
                 receiver = userId
             };
 
@@ -760,12 +822,12 @@ namespace LiteP2PNet {
             if (target._self) return true;
 
             if (target._owner) {
-                if (networkId.ownerId == _userId) return true;
+                if (networkId.ownerId == User.id) return true;
                 return SendData(networkId.ownerId, data, option);
             }
 
-            IEnumerable<string> targets = target.targets.Except(new[] { _userId });
-            if (target._all) targets = Members.Except(new[] { _userId });
+            IEnumerable<string> targets = target.targets.Except(new[] { User.id });
+            if (target._all) targets = Members.Select(m => m.id).Except(new[] { User.id });
 
             bool result = true;
             foreach (var t in targets) {
@@ -839,7 +901,7 @@ namespace LiteP2PNet {
                         throw new RpcUnknownIdException($"Cannot find RpcComponent with NetworkId '{networkId}'");
                     }
 
-                    if (networkId.Value.ownerId == _userId) {
+                    if (networkId.Value.ownerId == User.id) {
                         SendRpcResult(endpoint.sender, requestId, methodInfo.ReturnType, result, option ?? SendOption.OrderedReliable);
                     }
                 }        
@@ -912,7 +974,7 @@ namespace LiteP2PNet {
                         throw new RpcUnknownIdException($"Cannot find RpcBehaviour with NetworkId '{networkId}'");
                     }
 
-                    if (networkId.Value.ownerId == _userId) {
+                    if (networkId.Value.ownerId == User.id) {
                         SendRpcResult(endpoint.sender, requestId, typeof(void), null, option ?? SendOption.OrderedReliable);
                     }
                 }
@@ -982,8 +1044,8 @@ namespace LiteP2PNet {
         }
 
         internal bool CallRpcMethod<ClsTy>(NetworkId networkId, RpcTarget target, SendOption option, RpcCall rpcCall, Action<object> callback, ClsTy cls) {
-            bool isOwner = networkId.ownerId == _userId;
-            if (target._self || target._all || (target._owner && isOwner) || target.targets.Contains(_userId)) {
+            bool isOwner = networkId.ownerId == User.id;
+            if (target._self || target._all || (target._owner && isOwner) || target.targets.Contains(User.id)) {
                 var methodInfo = RpcRegistry.GetRpcMethod(rpcCall.methodId);
                 var result = methodInfo.Invoke(cls, rpcCall.parameters);
 
@@ -1041,7 +1103,7 @@ namespace LiteP2PNet {
         }
 
         internal bool GetRpcProperty<ClsTy>(NetworkId networkId, string propertyId, SendOption option, Action<object> callback, ClsTy cls) {
-            if (networkId.ownerId == _userId) {
+            if (networkId.ownerId == User.id) {
                 if (!RpcRegistry.CanReadRpcProperty(propertyId)) {
                     throw new Exception("something");
                 }
@@ -1095,8 +1157,8 @@ namespace LiteP2PNet {
         }
 
         internal bool SetRpcProperty<ClsTy>(NetworkId networkId, RpcTarget target, string propertyId, object value, SendOption option, Action<object> callback, ClsTy cls) {
-            bool isOwner = networkId.ownerId == _userId;
-            if (target._self || target._all || (target._owner && isOwner) || target.targets.Contains(_userId)) {
+            bool isOwner = networkId.ownerId == User.id;
+            if (target._self || target._all || (target._owner && isOwner) || target.targets.Contains(User.id)) {
                 if (!RpcRegistry.CanWriteRpcProperty(propertyId)) {
                     throw new Exception("something");
                 }
@@ -1139,8 +1201,8 @@ namespace LiteP2PNet {
         #region RPC Instantiate
 
         internal bool InstantiateRpcObject(string prefabKey, RpcInstantiationTarget target, RpcInstantiationData instData, Action<object> callback, SendOption option) {
-            var targets = target.targets.Except(new[] { _userId });
-            if (target._all) targets = Members.Except(new[] { _userId });
+            var targets = target.targets.Except(new[] { User.id });
+            if (target._all) targets = Members.Select(m => m.id).Except(new[] { User.id });
 
             if (targets.Count() == 0) return true;
 
