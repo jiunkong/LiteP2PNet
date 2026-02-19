@@ -57,9 +57,9 @@ namespace LiteP2PNet {
         private ConcurrentQueue<SignalingMessage> _incomingMessageQueue = new();
         private Dictionary<string, bool> _isDescriptionReadyMap = new();
 
-        public Action<string> OnUserJoined = null;
-        public Action<string> OnUserLeft = null;
-        public Action<string, string> OnHostChanged = null;
+        public Action<IUser> OnUserJoined = null;
+        public Action<IUser> OnUserLeft = null;
+        public Action<IUser, IUser> OnHostChanged = null;
         public Action<string> OnPeerConnected = null;
         public Action<string> OnPeerDisconnected = null;
         public Action<ConnectionFailedReason> OnConnectionFailed = null;
@@ -328,7 +328,8 @@ namespace LiteP2PNet {
             switch (lobbyUpdateData.type) {
                 case "join": {
                         Lobby = lobby;
-                        OnUserJoined?.Invoke(lobbyUpdateData.target);
+                        var target = Lobby.members.FirstOrDefault(x => x.id == lobbyUpdateData.target);
+                        OnUserJoined?.Invoke(target);
                         break;
                     }
                 case "leave": {
@@ -336,11 +337,12 @@ namespace LiteP2PNet {
                             // Reconnect
                             DisconnectPeer(Host.id);
                             StartCoroutine(ConnectPeerAsync(lobby.hostId));
-                            OnHostChanged?.Invoke(Host.id, lobby.hostId);
+                            OnHostChanged?.Invoke(Host, lobby.host);
                         }
 
+                        var target = Participants.FirstOrDefault(x => x.id == lobbyUpdateData.target);
                         Lobby = lobby;
-                        OnUserLeft?.Invoke(lobbyUpdateData.target);
+                        OnUserLeft?.Invoke(target);
                         break;
                     }
                 case "init": {
