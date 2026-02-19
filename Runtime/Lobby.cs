@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Newtonsoft.Json;
 
 namespace LiteP2PNet
@@ -36,6 +37,24 @@ namespace LiteP2PNet
     }
 
     [Serializable]
+    internal class LobbyDTO<TLobbyState, TUserProfile, TAccountState> where TLobbyState : class where TUserProfile : class where TAccountState : class {
+        public string id { get; set; }
+        public string name { get; set; }
+        public DateTimeOffset createdAt { get; set; }
+        public string hostId { get; set; }
+        public UserDTO<TUserProfile, TAccountState> host { get; set; }
+
+        public UserDTO<TUserProfile, TAccountState>[] members { get; set; }
+
+        public TLobbyState state { get; set; }
+
+        public int currentPlayers { get; set; }
+        public int maxPlayers { get; set; }
+        public bool isPlaying { get; set; }
+        public bool isPrivate { get; set; }
+    }
+
+    [Serializable]
     public class Lobby<TLobbyState> : ILobby where TLobbyState : class {
         public string id { get; internal set; }
         public string name { get; internal set; }
@@ -66,6 +85,23 @@ namespace LiteP2PNet
             members = source.members;
             state = source.state;
         }
+
+        public static Lobby<TLobbyState> FromJson<TUserProfile, TAccountState>(string json) where TUserProfile : class where TAccountState : class {
+            var dto = JsonConvert.DeserializeObject<LobbyDTO<TLobbyState, TUserProfile, TAccountState>>(json);
+            return new Lobby<TLobbyState> {
+                id = dto.id,
+                name = dto.name,
+                createdAt = dto.createdAt,
+                hostId = dto.hostId,
+                host = User<TUserProfile, TAccountState>.FromDTO(dto.host),
+                members = dto.members.Select(User<TUserProfile, TAccountState>.FromDTO).ToArray(),
+                state = dto.state,
+                currentPlayers = dto.currentPlayers,
+                maxPlayers = dto.maxPlayers,
+                isPlaying = dto.isPlaying,
+                isPrivate = dto.isPrivate
+            };
+        }
     }
 
     public interface ILobbyService {
@@ -79,7 +115,7 @@ namespace LiteP2PNet
         ILobby Deserialize(string jsonLobby);
     }
 
-    public class LobbyService<TLobbyState> : ILobbyService, ILobbyServiceInternal where TLobbyState : class {
+    public class LobbyService<TLobbyState, TUserProfile, TAccountState> : ILobbyService, ILobbyServiceInternal where TLobbyState : class where TUserProfile : class where TAccountState : class {
         private Network _network;
         private Dictionary<string, Action<ILobby>> _lobbyFetchCallbacks = new();
 
@@ -116,8 +152,8 @@ namespace LiteP2PNet
             });
         }
 
-        public ILobby Deserialize(string jsonLobby) {
-            return JsonConvert.DeserializeObject<Lobby<TLobbyState>>(jsonLobby);
+        public ILobby Deserialize(string jsonLobby) {;
+            return Lobby<TLobbyState>.FromJson<TUserProfile, TAccountState>(jsonLobby);
         }
 
         public void Fetch(ILobby lobby, Action callback = null) {
@@ -134,7 +170,7 @@ namespace LiteP2PNet
 
         void ILobbyServiceInternal.HandleFetchResponse(DataResponseDTO res) {
             if (_lobbyFetchCallbacks.TryGetValue(res.target, out Action<ILobby> callback)) {
-                var source = JsonConvert.DeserializeObject<Lobby<TLobbyState>>(res.data);
+                var source = Deserialize(res.data);
                 callback.Invoke(source);
                 _lobbyFetchCallbacks.Remove(res.target);
             }

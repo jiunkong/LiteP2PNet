@@ -26,6 +26,15 @@ namespace LiteP2PNet
     }
 
     [Serializable]
+    internal class UserDTO<TUserProfile, TAccountState> where TUserProfile : class where TAccountState : class {
+        public string id { get; set; }
+        public string joinedLobbyId { get; set; }
+        public string hostedLobbyId { get; set; }
+        public TUserProfile profile { get; set; }
+        public TAccountState account { get; set; }
+    }
+
+    [Serializable]
     public class User<TUserProfile, TAccountState> : IUser where TUserProfile : class where TAccountState : class {
         public string id { get; internal set; }
 
@@ -44,6 +53,15 @@ namespace LiteP2PNet
             profile = source.profile;
             account = source.account;
         }
+
+        public static User<TUserProfile, TAccountState> FromJson(string json) => JsonConvert.DeserializeObject<User<TUserProfile, TAccountState>>(json);
+        internal static User<TUserProfile, TAccountState> FromDTO(UserDTO<TUserProfile, TAccountState> dto) => new() {
+            id = dto.id,
+            joinedLobbyId = dto.joinedLobbyId,
+            hostedLobbyId = dto.hostedLobbyId,
+            profile = dto.profile,
+            account = dto.account
+        };
     }
 
     public interface IUserService {
@@ -90,7 +108,7 @@ namespace LiteP2PNet
 
         void IUserServiceInternal.HandleFetchResponse(DataResponseDTO res) {
             if (_userFetchCallbacks.TryGetValue(res.target, out Action<IUser> callback)) {
-                var source = JsonConvert.DeserializeObject<User<TUserProfile, TAccountState>>(res.data);
+                var source = User<TUserProfile, TAccountState>.FromJson(res.data);
                 callback.Invoke(source);
                 _userFetchCallbacks.Remove(res.target);
             }

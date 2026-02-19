@@ -161,7 +161,7 @@ namespace LiteP2PNet {
             _debugLog = debugLog;
 
             UserService = new UserService<TUserProfile, TAccountState>(this);
-            LobbyService = new LobbyService<TLobbyState>(this);
+            LobbyService = new LobbyService<TLobbyState, TUserProfile, TAccountState>(this);
 
             StartCoroutine(SyncUser<TUserProfile, TAccountState>(onUserSynced));
         }
