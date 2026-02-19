@@ -23,6 +23,7 @@ namespace LiteP2PNet
         public string hostedLobbyId { get; }
 
         public void Apply(IUser user);
+        public bool Equals(IUser other);
     }
 
     [Serializable]
@@ -62,6 +63,8 @@ namespace LiteP2PNet
             profile = dto.profile,
             account = dto.account
         };
+
+        public bool Equals(IUser other) => id == other.id;
     }
 
     public interface IUserService {
