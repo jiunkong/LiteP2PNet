@@ -1,10 +1,65 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Text;
 using MessagePack;
 
 namespace LiteP2PNet {
+    public static class QueryParamBuilder
+    {
+       public static string BuildUrl(string baseUrl, IDictionary<string, object> parameters)
+        {
+            if (string.IsNullOrWhiteSpace(baseUrl)) return string.Empty;
+
+            string cleanedUrl = baseUrl.TrimEnd('/');
+            if (parameters == null || parameters.Count == 0) return cleanedUrl;
+
+            var sb = new StringBuilder();
+
+            foreach (var kvp in parameters)
+            {
+                if (kvp.Value == null) continue;
+
+                // 배열 또는 리스트인지 확인 (문자열 제외)
+                if (kvp.Value is IEnumerable enumerable && !(kvp.Value is string))
+                {
+                    foreach (var item in enumerable)
+                    {
+                        if (item == null) continue;
+                        // 배열 요소이므로 isArray를 true로 전달
+                        AppendParam(sb, kvp.Key, item, isArray: true);
+                    }
+                }
+                else
+                {
+                    // 단일 값이므로 isArray를 false로 전달
+                    AppendParam(sb, kvp.Key, kvp.Value, isArray: false);
+                }
+            }
+
+            if (sb.Length == 0) return cleanedUrl;
+
+            return $"{cleanedUrl}?{sb.ToString().TrimEnd('&')}";
+        }
+
+        private static void AppendParam(StringBuilder sb, string key, object value, bool isArray)
+        {
+            // 1. 키 처리: 배열이면 뒤에 []를 붙임
+            string finalKey = isArray ? $"{key}[]" : key;
+
+            // 2. 값 처리: 날짜 포맷팅 등
+            string stringValue;
+            if (value is DateTime dt) stringValue = dt.ToString("yyyy-MM-ddTHH:mm:ssZ");
+            else if (value is DateTimeOffset dto) stringValue = dto.ToString("yyyy-MM-ddTHH:mm:ssK");
+            else stringValue = value.ToString();
+
+            // 3. 인코딩 및 추가
+            sb.Append($"{WebUtility.UrlEncode(finalKey)}={WebUtility.UrlEncode(stringValue)}&");
+        }
+    }
+
     internal static class Utils {
         public static Range GetByteRange(ref int offset, int size) {
             var range = offset..(offset + size);
