@@ -90,7 +90,9 @@ namespace LiteP2PNet {
         [EnumMember(Value = "response-data")]
         ResponseData,
         [EnumMember(Value = "apply-data")]
-        ApplyData
+        ApplyData,
+        [EnumMember(Value = "data-update")]
+        DataUpdate
     }
     [Serializable]
     internal class SignalingMessage {
@@ -139,10 +141,26 @@ namespace LiteP2PNet {
         public string data;
     }
 
+    [JsonConverter(typeof(StringEnumConverter))]
+    internal enum DataChangeType {
+        [EnumMember(Value = "user-account")]
+        UserAccount,
+        [EnumMember(Value = "lobby-metadata")]
+        LobbyMetadata,
+        [EnumMember(Value = "lobby-state")]
+        LobbyState
+    }
+
     [Serializable]
     internal class DataApplyDTO {
-        public string type;
+        public DataChangeType type;
         public string target;
+        public string data;
+    }
+
+    [Serializable]
+    internal class DataUpdateDTO {
+        public DataChangeType type;
         public string data;
     }
 

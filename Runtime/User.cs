@@ -17,10 +17,10 @@ namespace LiteP2PNet
     }
 
     public interface IUser {
-        public string id { get; }
+        public string Id { get; }
 
-        public string joinedLobbyId { get; }
-        public string hostedLobbyId { get; }
+        public string JoinedLobbyId { get; }
+        public string HostedLobbyId { get; }
 
         public void Apply(IUser user);
         public bool Equals(IUser other);
@@ -37,34 +37,34 @@ namespace LiteP2PNet
 
     [Serializable]
     public class User<TUserProfile, TAccountState> : IUser where TUserProfile : class where TAccountState : class {
-        public string id { get; internal set; }
+        public string Id { get; internal set; }
 
-        public string joinedLobbyId { get; internal set; }
-        public string hostedLobbyId { get; internal set; }
+        public string JoinedLobbyId { get; internal set; }
+        public string HostedLobbyId { get; internal set; }
 
-        public TUserProfile profile { get; internal set; }
-        public TAccountState account { get; internal set; }
+        public TUserProfile Profile { get; internal set; }
+        public TAccountState Account { get; internal set; }
 
         public void Apply(IUser user) {
             if (!user.TryCast<TUserProfile, TAccountState>(out var source)) return;
 
-            id = source.id;
-            joinedLobbyId = source.joinedLobbyId;
-            hostedLobbyId = source.hostedLobbyId;
-            profile = source.profile;
-            account = source.account;
+            Id = source.Id;
+            JoinedLobbyId = source.JoinedLobbyId;
+            HostedLobbyId = source.HostedLobbyId;
+            Profile = source.Profile;
+            Account = source.Account;
         }
 
         public static User<TUserProfile, TAccountState> FromJson(string json) => JsonConvert.DeserializeObject<User<TUserProfile, TAccountState>>(json);
         internal static User<TUserProfile, TAccountState> FromDTO(UserDTO<TUserProfile, TAccountState> dto) => new() {
-            id = dto.id,
-            joinedLobbyId = dto.joinedLobbyId,
-            hostedLobbyId = dto.hostedLobbyId,
-            profile = dto.profile,
-            account = dto.account
+            Id = dto.id,
+            JoinedLobbyId = dto.joinedLobbyId,
+            HostedLobbyId = dto.hostedLobbyId,
+            Profile = dto.profile,
+            Account = dto.account
         };
 
-        public bool Equals(IUser other) => id == other.id;
+        public bool Equals(IUser other) => Id == other.Id;
     }
 
     public interface IUserService {
@@ -74,6 +74,7 @@ namespace LiteP2PNet
 
     internal interface IUserServiceInternal : IUserService {
         void HandleFetchResponse(DataResponseDTO res);
+        IUser Deserialize(string jsonUser);
     }
 
     public class UserService<TUserProfile, TAccountState> : IUserService, IUserServiceInternal where TUserProfile : class where TAccountState : class {
@@ -88,10 +89,10 @@ namespace LiteP2PNet
         public void Fetch(IUser user, Action callback = null) {
             _network.SendSignalingMessage(SignalingMsgType.RequestData, "server", new DataRequestDTO {
                 type = "user",
-                target = user.id
+                target = user.Id
             });
 
-            _userFetchCallbacks[user.id] = (source) => {
+            _userFetchCallbacks[user.Id] = (source) => {
                 user.Apply(source);
                 callback?.Invoke();
             };
@@ -103,8 +104,8 @@ namespace LiteP2PNet
             if (!_network.IsHost) UnityEngine.Debug.LogWarning("ApplyAccountState in UserService can only be called by the host");
 
             _network.SendSignalingMessage(SignalingMsgType.ApplyData, "server", new DataApplyDTO {
-                type = "user-account",
-                target = user.id,
+                type = DataChangeType.UserAccount,
+                target = user.Id,
                 data = JsonConvert.SerializeObject(state)
             });
         }
@@ -115,6 +116,10 @@ namespace LiteP2PNet
                 callback.Invoke(source);
                 _userFetchCallbacks.Remove(res.target);
             }
+        }
+
+        public IUser Deserialize(string jsonUser) {
+            return User<TUserProfile, TAccountState>.FromJson(jsonUser);
         }
     }
 }
