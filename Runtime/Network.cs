@@ -375,12 +375,13 @@ namespace LiteP2PNet {
                                 DisconnectPeer(Host.Id);
                                 StartCoroutine(ConnectPeerAsync(lobby.HostId));
                             }
-                            
-                            OnHostChanged?.Invoke(Host, lobby.Host);
                         }
 
                         var target = Participants.FirstOrDefault(x => x.Id == lobbyUpdateData.target);
+                        var extHost = Host;
                         Lobby = lobby;
+
+                        if (wasHost) OnHostChanged?.Invoke(extHost, Host);
                         OnUserLeft?.Invoke(target, wasHost);
                         break;
                     }
