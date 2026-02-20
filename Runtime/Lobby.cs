@@ -18,20 +18,20 @@ namespace LiteP2PNet
     }
 
     public interface ILobby {
-        public string id { get; }
-        public string name { get; }
-        public DateTimeOffset createdAt { get; }
-        public string hostId { get; }
+        public string Id { get; }
+        public string Name { get; }
+        public DateTimeOffset CreatedAt { get; }
+        public string HostId { get; }
 
-        public int currentPlayers { get; }
-        public int maxPlayers { get; }
+        public int CurrentPlayers { get; }
+        public int MaxPlayers { get; }
         
-        public bool isPlaying { get; }
+        public bool IsPlaying { get; }
 
-        public bool isPrivate { get; }
+        public bool IsPrivate { get; }
 
-        public IUser host { get; }
-        public IReadOnlyList<IUser> members { get; }
+        public IUser Host { get; }
+        public IReadOnlyList<IUser> Members { get; }
 
         public void Apply(ILobby lobby);
     }
@@ -56,50 +56,50 @@ namespace LiteP2PNet
 
     [Serializable]
     public class Lobby<TLobbyState> : ILobby where TLobbyState : class {
-        public string id { get; internal set; }
-        public string name { get; internal set; }
-        public DateTimeOffset createdAt { get; internal set; }
-        public string hostId { get; internal set; }
-        public IUser host { get; internal set; }
+        public string Id { get; internal set; }
+        public string Name { get; internal set; }
+        public DateTimeOffset CreatedAt { get; internal set; }
+        public string HostId { get; internal set; }
+        public IUser Host { get; internal set; }
 
-        public IUser[] members { get; internal set; }
+        public IUser[] Members { get; internal set; }
 
-        public TLobbyState state { get; internal set; }
+        public TLobbyState State { get; internal set; }
 
-        public int currentPlayers { get; internal set; }
-        public int maxPlayers { get; internal set; }
+        public int CurrentPlayers { get; internal set; }
+        public int MaxPlayers { get; internal set; }
 
-        public bool isPlaying { get; internal set; }
-        public bool isPrivate { get; internal set; }
+        public bool IsPlaying { get; internal set; }
+        public bool IsPrivate { get; internal set; }
 
-        IReadOnlyList<IUser> ILobby.members => members;
+        IReadOnlyList<IUser> ILobby.Members => Members;
 
         public void Apply(ILobby lobby) {
             if (!lobby.TryCast(out Lobby<TLobbyState> source)) return;
 
-            id = source.id;
-            name = source.name;
-            createdAt = source.createdAt;
-            hostId = source.hostId;
-            host = source.host;
-            members = source.members;
-            state = source.state;
+            Id = source.Id;
+            Name = source.Name;
+            CreatedAt = source.CreatedAt;
+            HostId = source.HostId;
+            Host = source.Host;
+            Members = source.Members;
+            State = source.State;
         }
 
         public static Lobby<TLobbyState> FromJson<TUserProfile, TAccountState>(string json) where TUserProfile : class where TAccountState : class {
             var dto = JsonConvert.DeserializeObject<LobbyDTO<TLobbyState, TUserProfile, TAccountState>>(json);
             return new Lobby<TLobbyState> {
-                id = dto.id,
-                name = dto.name,
-                createdAt = dto.createdAt,
-                hostId = dto.hostId,
-                host = User<TUserProfile, TAccountState>.FromDTO(dto.host),
-                members = dto.members.Select(User<TUserProfile, TAccountState>.FromDTO).ToArray(),
-                state = dto.state,
-                currentPlayers = dto.currentPlayers,
-                maxPlayers = dto.maxPlayers,
-                isPlaying = dto.isPlaying,
-                isPrivate = dto.isPrivate
+                Id = dto.id,
+                Name = dto.name,
+                CreatedAt = dto.createdAt,
+                HostId = dto.hostId,
+                Host = User<TUserProfile, TAccountState>.FromDTO(dto.host),
+                Members = dto.members.Select(User<TUserProfile, TAccountState>.FromDTO).ToArray(),
+                State = dto.state,
+                CurrentPlayers = dto.currentPlayers,
+                MaxPlayers = dto.maxPlayers,
+                IsPlaying = dto.isPlaying,
+                IsPrivate = dto.isPrivate
             };
         }
     }
@@ -129,8 +129,8 @@ namespace LiteP2PNet
             if (!_network.IsHost) UnityEngine.Debug.LogWarning("ApplyMetadata in LobbyService can only be called by the host");
 
             _network.SendSignalingMessage(SignalingMsgType.ApplyData, "server", new DataApplyDTO {
-                type = "lobby-metadata",
-                target = lobby.id,
+                type = DataChangeType.LobbyMetadata,
+                target = lobby.Id,
                 data = JsonConvert.SerializeObject(new LobbyMetadataUpdateDTO {
                     name = name,
                     isPlaying = isPlaying,
@@ -146,8 +146,8 @@ namespace LiteP2PNet
             if (!_network.IsHost) UnityEngine.Debug.LogWarning("ApplyState in LobbyService can only be called by the host");
             
             _network.SendSignalingMessage(SignalingMsgType.ApplyData, "server", new DataApplyDTO {
-                type = "lobby-state",
-                target = lobby.id,
+                type = DataChangeType.LobbyState,
+                target = lobby.Id,
                 data = JsonConvert.SerializeObject(state)
             });
         }
@@ -159,10 +159,10 @@ namespace LiteP2PNet
         public void Fetch(ILobby lobby, Action callback = null) {
             _network.SendSignalingMessage(SignalingMsgType.RequestData, "server", new DataRequestDTO {
                 type = "lobby",
-                target = lobby.id
+                target = lobby.Id
             });
 
-            _lobbyFetchCallbacks[lobby.id] = (source) => {
+            _lobbyFetchCallbacks[lobby.Id] = (source) => {
                 lobby.Apply(source);
                 callback?.Invoke();
             };
