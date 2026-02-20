@@ -368,11 +368,15 @@ namespace LiteP2PNet {
                     }
                 case "leave": {
                         bool wasHost = false;
-                        if (Host.Id != lobby.HostId && lobby.HostId != User.Id) {
+                        if (Host.Id != lobby.HostId) { // when host changed
                             wasHost = true;
-                            // Reconnect
-                            DisconnectPeer(Host.Id);
-                            StartCoroutine(ConnectPeerAsync(lobby.HostId));
+
+                            if (lobby.HostId != User.Id) {
+                                // Reconnect
+                                DisconnectPeer(Host.Id);
+                                StartCoroutine(ConnectPeerAsync(lobby.HostId));
+                            }
+                            
                             OnHostChanged?.Invoke(Host, lobby.Host);
                         }
 
