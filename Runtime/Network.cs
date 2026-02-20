@@ -37,12 +37,13 @@ namespace LiteP2PNet {
         public ILobbyService LobbyService;
 
         public ILobby Lobby { get; private set; }
-        public IUser Host => Lobby.host;
-        public bool IsHost => Host.id == User.id;
-        public IReadOnlyList<IUser> Members => Lobby.members;
+        public IUser Host => Lobby == null ? null : Lobby.host;
+        public bool IsHost => Lobby == null ? false : Host.id == User.id;
+        public IReadOnlyList<IUser> Members => Lobby == null ? null : Lobby.members;
         public IEnumerable<IUser> Participants {
             get
             {
+                if (Lobby == null) yield break;
                 yield return Host;
                 foreach (var m in Members)
                     yield return m;
@@ -262,6 +263,7 @@ namespace LiteP2PNet {
 
         public void LeaveLobby() {
             DisconnectAll();
+            Lobby = null;
             _signaling.Close();
             _signaling = null;
         }
