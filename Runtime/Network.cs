@@ -1285,7 +1285,7 @@ namespace LiteP2PNet {
 
         private void CleanUp() {
             if (_signaling != null) LeaveLobby();
-            _networkIdRegistry.Dispose();
+            _networkIdRegistry?.Dispose();
         }
 
         void OnApplicationQuit() {
